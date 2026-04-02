@@ -197,10 +197,7 @@ namespace Cipher {
 
   public:
 
-    /**
-     * @param key A `unsigned char *` array that contains the AES key.
-     * This key should either be **16, 24, 32** bytes, or `128`, `192`, `256` bits.
-     */
+    //the parameter key contains the key, and key bits can only be 128, 192 or 256 bits
     Aes(unsigned char key[key_bytes]) : round_keys() {
       constexpr bool valid_aes_key_bit_size = key_bits == 128 || key_bits == 192 || key_bits == 256;
       static_assert(valid_aes_key_bit_size, "The valid values are only: 128, 192 & 256");
@@ -221,11 +218,7 @@ namespace Cipher {
       std::memset(round_keys, 0x00, round_keys_size);
     }
 
-    /// @brief Performs AES encryption to a 16 byte block of memory.
-    ///
-    /// @note This method will overwrite the input block of memory.
-    ///
-    /// @param block 16 byte block of memory.
+    //aes encryption of a 16 bytes block. it will overwrite the input data
     void encrypt_block(unsigned char *block) {
       // load the current block & current round key into the registers
       __m128i *xmm_round_keys = (__m128i *) round_keys;
@@ -248,11 +241,7 @@ namespace Cipher {
       _mm_storeu_si128((__m128i *) (block), state);
     }
 
-    /// @brief Performs AES decryption to a 16 byte block of memory.
-    ///
-    /// @note This method will overwrite the input block of memory.
-    ///
-    /// @param block 16 byte block of memory.
+    //aes decryption of a 16 bytes block. it will overwrite the input data
     void decrypt_block(unsigned char *block) {
       // load the current block & current round key into the registers
       __m128i *xmm_round_keys = (__m128i *) round_keys;
