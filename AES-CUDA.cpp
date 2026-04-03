@@ -241,6 +241,8 @@ int main() {
     for (int i = 0; i < 32; ++i)
         key[i] = static_cast<unsigned char>(dist(gen));
 
+	//here we call the constructor of the class cipher, included in AES.hpp, which transforms the key passed as a parameter
+	//into an expanded key of 240 bits
     Cipher::Aes<256> aes(key);
 
     gpuErrchk(cudaMemcpy(d_keys, aes.getRoundKeys(), EXPANDED_KEY_SIZE, cudaMemcpyHostToDevice));
