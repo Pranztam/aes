@@ -159,10 +159,6 @@ byte gmul(byte a, byte b) {
     byte p = 0;
     for (int i = 0; i < 8; i++) {
         if (b & 1) p ^= a;
-        // byte hi = a & 0x80;
-        // a <<= 1;
-        // if (hi) a ^= 0x1b;
-        // b >>= 1;
         if (a & 0x80)
             a = (a << 1) ^ 0x11b;
         else
