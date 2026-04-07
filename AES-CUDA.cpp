@@ -53,6 +53,51 @@ byte h_sbox[256] = {
         0x8c, 0xa1, 0x89, 0x0d, 0xbf, 0xe6, 0x42, 0x68, 0x41, 0x99, 0x2d, 0x0f, 0xb0, 0x54, 0xbb, 0x16
 };
 
+//gmul is an implementation of multiplication in GF(2^8) finite field, needed to compute the t-tables.
+//more specifically, the only values of b are either 2 or 3, because in the mixcolumns matrix we only have '1','2','3' multipliers, as it can be seen from the the AES NIST standard paper.
+//gmul performs a multiplication in the GF(2^8) finite field. This particular implementation is called "Russian peasant" -> https://en.wikipedia.org/wiki/Finite_field_arithmetic#C_programming_example
+byte gmul(byte a, byte b) {
+    byte p = 0;
+    for (int i = 0; i < 8; i++) {
+        if (b & 1) p ^= a;
+        if (a & 0x80)
+            a = (a << 1) ^ 0x11b;
+        else
+            a <<= 1;
+        
+        b >>= 1;
+    }
+    return p;
+}
+
+//rotate left of a 32-bit word by 1 byte
+uint32_t rotate_word(uint32_t x) {
+    return (x >> 8) | (x << 24);
+}
+
+//creation of the 4-tables
+void t_tables(uint32_t* T0, uint32_t* T1, uint32_t* T2, uint32_t* T3) {
+
+    for (int x = 0; x < 256; x++) {
+
+        //the base value of the computation of the t-table is taken from the sbox so that it can substitute the SubBytes operation in the main rounds
+        byte s = h_sbox[x];
+
+        
+        byte s2 = gmul(s, 2);
+        byte s3 = gmul(s, 3);
+
+        //creating each entry of t-tables(32 bit words) -> with this structure we can see the coefficients of the first column of the mixcolumn matrix, which are 2,1,1,3
+        //the other 3 tables are obtained by just rotating the row left of 1 byte and represent the other 3 rows of the mix column matrix coefficients.
+        uint32_t t = (s2 << 24) | (s  << 16) | (s  << 8) | (s3);
+
+        T0[x] = t;
+        T1[x] = rotate_word(t);
+        T2[x] = rotate_word(T1[x]);
+        T3[x] = rotate_word(T2[x]);
+    }
+}
+
 //last round (14th) of the 256 bit encryption. It requires a separate computation because it does not perform a mixcolumn operation
 //for simplicity of writing, it has been separated from the main rounds computation where we can use bytes instead of 32 bit words as units.
 __device__ void final_round(uint32_t* state, const byte* roundKey) {
@@ -114,29 +159,28 @@ __device__ void AES256_encrypt_block(byte* data, const byte* roundKeys, uint32_t
         state[i] ^= comp_k;
     }
 
-    //main rounds, which perform SubBytes, ShiftRows and MixColumns thanks to the t-tables, whose entries are 32-bits words each and contain 256 elements. 
+    //main rounds, which perform SubBytes, ShiftRows and MixColumns thanks to the t-tables, whose entries are 32-bits words each and contain 256 elements.
+	//more precisely the SubBytes and MixColumns is integrated in the t-tables creation, as we've seen above, whilst now we are performing a
+	//ShiftRows operation by manipulating the state array indexes in the assignments
+	uint32_t temp_t[4];
     for (int round = 1; round < AES256_ROUNDS; round++) {
 
-        uint32_t t0 = T0[(state[0] >> 24) & 0xff] ^ T1[(state[1] >> 16) & 0xff] ^ T2[(state[2] >> 8) & 0xff] ^ T3[(state[3]) & 0xff];
-        uint32_t t1 = T0[(state[1] >> 24) & 0xff] ^ T1[(state[2] >> 16) & 0xff] ^ T2[(state[3] >> 8) & 0xff] ^ T3[(state[0]) & 0xff];
-        uint32_t t2 = T0[(state[2] >> 24) & 0xff] ^ T1[(state[3] >> 16) & 0xff] ^ T2[(state[0] >> 8) & 0xff] ^ T3[(state[1]) & 0xff];
-        uint32_t t3 = T0[(state[3] >> 24) & 0xff] ^ T1[(state[0] >> 16) & 0xff] ^ T2[(state[1] >> 8) & 0xff] ^ T3[(state[2]) & 0xff];
+        uint32_t temp_t[0] = T0[(state[0] >> 24) & 0xff] ^ T1[(state[1] >> 16) & 0xff] ^ T2[(state[2] >> 8) & 0xff] ^ T3[(state[3]) & 0xff];
+        uint32_t temp_t[1] = T0[(state[1] >> 24) & 0xff] ^ T1[(state[2] >> 16) & 0xff] ^ T2[(state[3] >> 8) & 0xff] ^ T3[(state[0]) & 0xff];
+        uint32_t temp_t[2] = T0[(state[2] >> 24) & 0xff] ^ T1[(state[3] >> 16) & 0xff] ^ T2[(state[0] >> 8) & 0xff] ^ T3[(state[1]) & 0xff];
+        uint32_t temp_t[3] = T0[(state[3] >> 24) & 0xff] ^ T1[(state[0] >> 16) & 0xff] ^ T2[(state[1] >> 8) & 0xff] ^ T3[(state[2]) & 0xff];
 
         //add round key
         for (int i = 0; i < 4; i++) {
             uint32_t comp_k = (roundKeys[round*16 + i*4+0] << 24) | (roundKeys[round*16 + i*4+1] << 16) | (roundKeys[round*16 + i*4+2] << 8) | (roundKeys[round*16 + i*4+3]);
-
-            if (i == 0) t0 ^= comp_k;
-            if (i == 1) t1 ^= comp_k;
-            if (i == 2) t2 ^= comp_k;
-            if (i == 3) t3 ^= comp_k;
+			temp_t[i] ^= comp_k;
         }
 
         //finally we recreate the state from the t-tables
-        state[0] = t0;
-        state[1] = t1;
-        state[2] = t2;
-        state[3] = t3;
+        state[0] = temp_t[0];
+        state[1] = temp_t[1];
+        state[2] = temp_t[2];
+        state[3] = temp_t[3];
 
     }
 
@@ -149,51 +193,6 @@ __device__ void AES256_encrypt_block(byte* data, const byte* roundKeys, uint32_t
         data[i*4+1] = (state[i] >> 16) & 0xff;
         data[i*4+2] = (state[i] >> 8) & 0xff;
         data[i*4+3] = state[i] & 0xff;
-    }
-}
-
-//gmul is an implementation of multiplication in GF(2^8) finite field, needed to compute the t-tables.
-//more specifically, the only values of b are either 2 or 3, because in the mixcolumns matrix we only have '1','2','3' multipliers, as it can be seen from the the AES NIST standard paper.
-//gmul performs a multiplication in the GF(2^8) finite field. This particular implementation is called "Russian peasant" -> https://en.wikipedia.org/wiki/Finite_field_arithmetic#C_programming_example
-byte gmul(byte a, byte b) {
-    byte p = 0;
-    for (int i = 0; i < 8; i++) {
-        if (b & 1) p ^= a;
-        if (a & 0x80)
-            a = (a << 1) ^ 0x11b;
-        else
-            a <<= 1;
-        
-        b >>= 1;
-    }
-    return p;
-}
-
-//rotate left of a 32-bit word by 1 byte
-uint32_t rotate_word(uint32_t x) {
-    return (x >> 8) | (x << 24);
-}
-
-//creation of the 4-tables
-void t_tables(uint32_t* T0, uint32_t* T1, uint32_t* T2, uint32_t* T3) {
-
-    for (int x = 0; x < 256; x++) {
-
-        //the base value of the computation of the t-table is taken from the sbox so that it can substitute the SubBytes operation in the main rounds
-        byte s = h_sbox[x];
-
-        
-        byte s2 = gmul(s, 2);
-        byte s3 = gmul(s, 3);
-
-        //creating each entry of t-tables(32 bit words) -> with this structure we can see the coefficients of the first column of the mixcolumn matrix, which are 2,1,1,3
-        //the other 3 tables are obtained by just rotating the row left of 1 byte. -> ShiftRows
-        uint32_t t = (s2 << 24) | (s  << 16) | (s  << 8) | (s3);
-
-        T0[x] = t;
-        T1[x] = rotate_word(t);
-        T2[x] = rotate_word(T1[x]);
-        T3[x] = rotate_word(T2[x]);
     }
 }
 
@@ -229,7 +228,6 @@ int main() {
     byte *d_data, *d_keys;
     gpuErrchk(cudaMalloc(&d_data, TOTAL_SIZE));
     gpuErrchk(cudaMalloc(&d_keys, EXPANDED_KEY_SIZE));
-
     gpuErrchk(cudaMemcpy(d_data, h_data, TOTAL_SIZE, cudaMemcpyHostToDevice));
 
     //key generation
