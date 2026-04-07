@@ -162,25 +162,25 @@ __device__ void AES256_encrypt_block(byte* data, const byte* roundKeys, uint32_t
     //main rounds, which perform SubBytes, ShiftRows and MixColumns thanks to the t-tables, whose entries are 32-bits words each and contain 256 elements.
 	//more precisely the SubBytes and MixColumns is integrated in the t-tables creation, as we've seen above, whilst now we are performing a
 	//ShiftRows operation by manipulating the state array indexes in the assignments
-	uint32_t temp_t[4];
+	uint32_t t_table[4];
     for (int round = 1; round < AES256_ROUNDS; round++) {
 
-        uint32_t temp_t[0] = T0[(state[0] >> 24) & 0xff] ^ T1[(state[1] >> 16) & 0xff] ^ T2[(state[2] >> 8) & 0xff] ^ T3[(state[3]) & 0xff];
-        uint32_t temp_t[1] = T0[(state[1] >> 24) & 0xff] ^ T1[(state[2] >> 16) & 0xff] ^ T2[(state[3] >> 8) & 0xff] ^ T3[(state[0]) & 0xff];
-        uint32_t temp_t[2] = T0[(state[2] >> 24) & 0xff] ^ T1[(state[3] >> 16) & 0xff] ^ T2[(state[0] >> 8) & 0xff] ^ T3[(state[1]) & 0xff];
-        uint32_t temp_t[3] = T0[(state[3] >> 24) & 0xff] ^ T1[(state[0] >> 16) & 0xff] ^ T2[(state[1] >> 8) & 0xff] ^ T3[(state[2]) & 0xff];
+        t_table[0] = T0[(state[0] >> 24) & 0xff] ^ T1[(state[1] >> 16) & 0xff] ^ T2[(state[2] >> 8) & 0xff] ^ T3[(state[3]) & 0xff];
+        t_table[1] = T0[(state[1] >> 24) & 0xff] ^ T1[(state[2] >> 16) & 0xff] ^ T2[(state[3] >> 8) & 0xff] ^ T3[(state[0]) & 0xff];
+        t_table[2] = T0[(state[2] >> 24) & 0xff] ^ T1[(state[3] >> 16) & 0xff] ^ T2[(state[0] >> 8) & 0xff] ^ T3[(state[1]) & 0xff];
+        t_table[3] = T0[(state[3] >> 24) & 0xff] ^ T1[(state[0] >> 16) & 0xff] ^ T2[(state[1] >> 8) & 0xff] ^ T3[(state[2]) & 0xff];
 
         //add round key
         for (int i = 0; i < 4; i++) {
             uint32_t comp_k = (roundKeys[round*16 + i*4+0] << 24) | (roundKeys[round*16 + i*4+1] << 16) | (roundKeys[round*16 + i*4+2] << 8) | (roundKeys[round*16 + i*4+3]);
-			temp_t[i] ^= comp_k;
+			t_table[i] ^= comp_k;
         }
 
         //finally we recreate the state from the t-tables
-        state[0] = temp_t[0];
-        state[1] = temp_t[1];
-        state[2] = temp_t[2];
-        state[3] = temp_t[3];
+        state[0] = t_table[0];
+        state[1] = t_table[1];
+        state[2] = t_table[2];
+        state[3] = t_table[3];
 
     }
 
@@ -223,12 +223,11 @@ void write_file(const char* filename, byte* data) {
 int main() {
     byte* h_data = read_file("input.bin");
 
-    size_t numBlocks = TOTAL_SIZE / 16;
+    //save original plain text in reference before copying the encrypted data back in h_data
+    byte* reference = (byte*)malloc(TOTAL_SIZE);
+    memcpy(reference, h_data, TOTAL_SIZE);
 
-    byte *d_data, *d_keys;
-    gpuErrchk(cudaMalloc(&d_data, TOTAL_SIZE));
-    gpuErrchk(cudaMalloc(&d_keys, EXPANDED_KEY_SIZE));
-    gpuErrchk(cudaMemcpy(d_data, h_data, TOTAL_SIZE, cudaMemcpyHostToDevice));
+    size_t numBlocks = TOTAL_SIZE / 16;
 
     //key generation
     std::random_device rd;
@@ -243,16 +242,26 @@ int main() {
 	//into an expanded key of 240 bits
     Cipher::Aes<256> aes(key);
 
-    gpuErrchk(cudaMemcpy(d_keys, aes.getRoundKeys(), EXPANDED_KEY_SIZE, cudaMemcpyHostToDevice));
-
+    //t-tables creation
 	uint32_t h_T0[256], h_T1[256], h_T2[256], h_T3[256];
-
 	t_tables(h_T0, h_T1, h_T2, h_T3);
 
-	// allocate device tables
 	uint32_t *d_T0, *d_T1, *d_T2, *d_T3;
 
-	gpuErrchk(cudaMalloc(&d_T0, 256 * sizeof(uint32_t)));
+    int threads = 256;
+    int blocks = (numBlocks + threads - 1) / threads;
+
+    //d_data = device data, d_keys = expanded key for aes256 (240 bits)
+    byte *d_data, *d_keys;
+
+    uint64_t start_time = current_time_nsecs();
+
+    gpuErrchk(cudaMalloc(&d_data, TOTAL_SIZE));
+    gpuErrchk(cudaMalloc(&d_keys, EXPANDED_KEY_SIZE));
+    gpuErrchk(cudaMemcpy(d_data, h_data, TOTAL_SIZE, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(d_keys, aes.getRoundKeys(), EXPANDED_KEY_SIZE, cudaMemcpyHostToDevice));
+
+    gpuErrchk(cudaMalloc(&d_T0, 256 * sizeof(uint32_t)));
 	gpuErrchk(cudaMalloc(&d_T1, 256 * sizeof(uint32_t)));
 	gpuErrchk(cudaMalloc(&d_T2, 256 * sizeof(uint32_t)));
 	gpuErrchk(cudaMalloc(&d_T3, 256 * sizeof(uint32_t)));
@@ -263,23 +272,13 @@ int main() {
 	gpuErrchk(cudaMemcpy(d_T3, h_T3, 256 * sizeof(uint32_t), cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpyToSymbol(d_sbox, h_sbox, 256));
 
-
-    int threads = 256;
-    int blocks = (numBlocks + threads - 1) / threads;
-
-    uint64_t start_time = current_time_nsecs();
-
     aes256_kernel<<<blocks, threads>>>(d_data, d_keys, numBlocks, d_T0, d_T1, d_T2, d_T3);
     gpuErrchk(cudaDeviceSynchronize());
+    gpuErrchk(cudaMemcpy(h_data, d_data, TOTAL_SIZE, cudaMemcpyDeviceToHost));
 
     uint64_t end_time = current_time_nsecs();
     std::cout<<"elapsed time: "<< end_time - start_time<<std::endl;
 
-    //save original plain text in reference before copying the encrypted data back in h_data
-    byte* reference = (byte*)malloc(TOTAL_SIZE);
-    memcpy(reference, h_data, TOTAL_SIZE);
-
-    gpuErrchk(cudaMemcpy(h_data, d_data, TOTAL_SIZE, cudaMemcpyDeviceToHost));
     //correctness check
     AES_KEY enc_key;
     AES_set_encrypt_key(key, 256, &enc_key);
