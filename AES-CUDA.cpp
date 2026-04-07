@@ -114,7 +114,7 @@ __device__ void AES256_encrypt_block(byte* data, const byte* roundKeys, uint32_t
         state[i] ^= comp_k;
     }
 
-    //main rounds, which perform SubBytes, ShiftRows and MixColumns thanks to the t-tables, whose entries are 32-bits each and contain 256 elements. 
+    //main rounds, which perform SubBytes, ShiftRows and MixColumns thanks to the t-tables, whose entries are 32-bits words each and contain 256 elements. 
     for (int round = 1; round < AES256_ROUNDS; round++) {
 
         uint32_t t0 = T0[(state[0] >> 24) & 0xff] ^ T1[(state[1] >> 16) & 0xff] ^ T2[(state[2] >> 8) & 0xff] ^ T3[(state[3]) & 0xff];
