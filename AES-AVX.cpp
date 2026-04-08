@@ -12,7 +12,7 @@ constexpr size_t TOTAL_SIZE = 32 * 1024 * 1024;
 
 void encrypt_block(unsigned char* block);
 
-//sort of thread coarsening, each thread will encrypt >=8 block, calling the encrypt_block function, which is defined in AES.hpp, when the thread can't encrypt
+//each thread will encrypt >=8 block, calling the encrypt_block function, which is defined in AES.hpp, when the thread can't encrypt
 //any more chunks it starts processing blocks at a time
 inline void encrypt_chunk(unsigned char* data, Cipher::Aes<256>& aes) {
     aes.encrypt_block(data +  0);
@@ -39,10 +39,6 @@ void encrypt(unsigned char* data, size_t size, Cipher::Aes<256>& aes) {
 
 unsigned char* read_file(const char* filename) {
     FILE* f = fopen(filename, "rb");
-    // fseek(f, 0, SEEK_END);
-    // *size = ftell(f);
-    // rewind(f);
-
     unsigned char* data = (unsigned char*)malloc(TOTAL_SIZE);
     fread(data, 1, TOTAL_SIZE, f);
     fclose(f);
@@ -72,6 +68,7 @@ int main() {
     for (int i = 0; i < 32; ++i)
         key[i] = static_cast<unsigned char>(dist(gen));
 
+	//the Aes class takes care of the key expansion within its constructor
     Cipher::Aes<256> aes(key);
 
  
@@ -99,7 +96,7 @@ int main() {
     for (size_t i = 0; i < TOTAL_SIZE; i += BLOCK_SIZE)
         AES_encrypt(reference + i, reference + i, &enc_key);
 
-    // Verify
+    //correctness check
     if (std::memcmp(input, reference, TOTAL_SIZE) == 0)
         std::cout << "Encryption correct"<<std::endl;
     else
@@ -110,5 +107,3 @@ int main() {
 
     return 0;
 }
-
-// srun -p gpu-shared --time 00:00:10 --nodelist=node09 g++ test.cpp -o test -O3 -maes -pthread -lcrypto -std=c++20
