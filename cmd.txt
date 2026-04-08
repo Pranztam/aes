@@ -1,1 +1,0 @@
-// srun -p gpu-shared --time 00:00:10 --nodelist=node09 g++ test.cpp -o test -O3 -maes -pthread -lcrypto -std=c++20
