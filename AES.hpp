@@ -197,7 +197,7 @@ namespace Cipher {
 
   public:
 
-    //the parameter key contains the key, and key bits can only be 128, 192 or 256 bits
+    //the parameter key contains the key, and key bits can only be 128, 192 or 256 bits, even though we will only use 256-bit keys
     Aes(unsigned char key[key_bytes]) : round_keys() {
       constexpr bool valid_aes_key_bit_size = key_bits == 128 || key_bits == 192 || key_bits == 256;
       static_assert(valid_aes_key_bit_size, "The valid values are only: 128, 192 & 256");

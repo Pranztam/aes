@@ -9,7 +9,6 @@
 #define AES256_ROUNDS 14
 #define EXPANDED_KEY_SIZE 240
 
-constexpr size_t TOTAL_SIZE = 32 * 1024 * 1024;
 constexpr size_t BLOCK_SIZE = AES_BLOCK_SIZE;
 
 using byte = unsigned char;
@@ -204,39 +203,38 @@ __global__ void aes256_kernel(byte* data, byte* roundKeys, size_t numBlocks, uin
     AES256_encrypt_block(&data[idx * 16], roundKeys, T0, T1, T2, T3);
 }
 
-byte* read_file(const char* filename) {
-    FILE* f = fopen(filename, "rb");
+int main(int argc, char** argv) {
+    if(argc < 2){
+        std::cerr<<"Usage: ./AES-CUDA <size of text to generate in MB>"<<std::endl;
+        return -1;
+    }
 
-    byte* data = (byte*)malloc(TOTAL_SIZE);
-    fread(data, 1, TOTAL_SIZE, f);
-    fclose(f);
+    if(atoi(argv[1]) == 0 || atoi(argv[1]) > 1024){
+        std::cerr<<"Size must be between 1 and 128"<<std::endl;
+        return -1;
+    }
 
-    return data;
-}
+    size_t SIZE_MB = atoi(argv[1])*1024*1024;
 
-void write_file(const char* filename, byte* data) {
-    FILE* f = fopen(filename, "wb");
-    fwrite(data, 1, TOTAL_SIZE, f);
-    fclose(f);
-}
-
-int main() {
-    byte* h_data = read_file("input.bin");
-
-    //save original plain text in reference before copying the encrypted data back in h_data
-    byte* reference = (byte*)malloc(TOTAL_SIZE);
-    memcpy(reference, h_data, TOTAL_SIZE);
-
-    size_t numBlocks = TOTAL_SIZE / 16;
-
-    //key generation
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<int> dist(0, 255);
-    
+
+    //plaintext generation
+    byte* h_data = (byte*)malloc(SIZE_MB);
+    for (size_t i = 0; i < SIZE_MB; i++)
+        h_data[i] = static_cast<byte>(dist(gen));
+
+    //save original plain text in reference before copying the encrypted data back in h_data
+    byte* reference = (byte*)malloc(SIZE_MB);
+    memcpy(reference, h_data, SIZE_MB);
+
+    size_t numBlocks = SIZE_MB / 16;
+
+    //key generation
     byte key[32];
     for (int i = 0; i < 32; ++i)
-        key[i] = static_cast<unsigned char>(dist(gen));
+        key[i] = static_cast<byte>(dist(gen));
 
 	//here we call the constructor of the class cipher, included in AES.hpp, which transforms the key passed as a parameter
 	//into an expanded key of 240 bits
@@ -256,9 +254,9 @@ int main() {
 
     uint64_t start_time = current_time_nsecs();
 
-    gpuErrchk(cudaMalloc(&d_data, TOTAL_SIZE));
+    gpuErrchk(cudaMalloc(&d_data, SIZE_MB));
     gpuErrchk(cudaMalloc(&d_keys, EXPANDED_KEY_SIZE));
-    gpuErrchk(cudaMemcpy(d_data, h_data, TOTAL_SIZE, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(d_data, h_data, SIZE_MB, cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpy(d_keys, aes.getRoundKeys(), EXPANDED_KEY_SIZE, cudaMemcpyHostToDevice));
 
     gpuErrchk(cudaMalloc(&d_T0, 256 * sizeof(uint32_t)));
@@ -274,7 +272,7 @@ int main() {
 
     aes256_kernel<<<blocks, threads>>>(d_data, d_keys, numBlocks, d_T0, d_T1, d_T2, d_T3);
     gpuErrchk(cudaDeviceSynchronize());
-    gpuErrchk(cudaMemcpy(h_data, d_data, TOTAL_SIZE, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(h_data, d_data, SIZE_MB, cudaMemcpyDeviceToHost));
 
     uint64_t end_time = current_time_nsecs();
     std::cout<<"elapsed time: "<< end_time - start_time<<std::endl;
@@ -283,18 +281,21 @@ int main() {
     AES_KEY enc_key;
     AES_set_encrypt_key(key, 256, &enc_key);
 
-    for (size_t i = 0; i < TOTAL_SIZE; i += BLOCK_SIZE)
+    for (size_t i = 0; i < SIZE_MB; i += BLOCK_SIZE)
         AES_encrypt(reference + i, reference + i, &enc_key);
 
-    if (memcmp(h_data, reference, TOTAL_SIZE) == 0)
+    if (memcmp(h_data, reference, SIZE_MB) == 0)
         std::cout << "Encryption correct"<<std::endl;
     else
         std::cout << "Error in the encryption"<<std::endl;
     
-    write_file("output.bin", h_data);
-
     gpuErrchk(cudaFree(d_data));
     gpuErrchk(cudaFree(d_keys));
+    gpuErrchk(cudaFree(d_T0));
+    gpuErrchk(cudaFree(d_T1));
+    gpuErrchk(cudaFree(d_T2));
+    gpuErrchk(cudaFree(d_T3));
+
     free(h_data);
     free(reference);
 

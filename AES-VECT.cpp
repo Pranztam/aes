@@ -8,7 +8,13 @@
 
 constexpr size_t THREAD_COUNT = 32;
 constexpr size_t BLOCK_SIZE = 16;
-constexpr size_t TOTAL_SIZE = 32 * 1024 * 1024;
+
+inline uint64_t current_time_nsecs()
+{
+    struct timespec t;
+    clock_gettime(CLOCK_REALTIME, &t);
+    return (t.tv_sec)*1000000000L + t.tv_nsec;
+}
 
 void encrypt_block(unsigned char* block);
 
@@ -37,31 +43,32 @@ void encrypt(unsigned char* data, size_t size, Cipher::Aes<256>& aes) {
     }
 }
 
-unsigned char* read_file(const char* filename) {
-    FILE* f = fopen(filename, "rb");
-    unsigned char* data = (unsigned char*)malloc(TOTAL_SIZE);
-    fread(data, 1, TOTAL_SIZE, f);
-    fclose(f);
+int main(int argc, char **argv) {
+    if(argc < 2){
+        std::cerr<<"Usage: ./AES-VECT <size of text to generate in MB>"<<std::endl;
+        return -1;
+    }
 
-    return data;
-}
+    if(atoi(argv[1]) == 0 || atoi(argv[1]) > 1024){
+        std::cerr<<"Size must be between 1 and 128"<<std::endl;
+        return -1;
+    }
 
-void write_file(const char* filename, unsigned char* data) {
-    FILE* f = fopen(filename, "wb");
-    fwrite(data, 1, TOTAL_SIZE, f);
-    fclose(f);
-}
-
-int main() {
-    unsigned char* input = read_file("input.bin");
+    size_t SIZE_MB = atoi(argv[1])*1024*1024;
 
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<int> dist(0, 255);
 
+    //plaintext generation
+    unsigned char* input = (unsigned char*)malloc(SIZE_MB);
+    for (size_t i = 0; i < SIZE_MB; i++)
+        input[i] = static_cast<unsigned char>(dist(gen));
+
+
     //copy of original data to reference array for correctness check
-    unsigned char* reference = (unsigned char*)malloc(TOTAL_SIZE);
-    memcpy(reference, input, TOTAL_SIZE);
+    unsigned char* reference = (unsigned char*)malloc(SIZE_MB);
+    memcpy(reference, input, SIZE_MB);
 
     //key generation
     unsigned char key[32];
@@ -78,13 +85,15 @@ int main() {
 
     std::vector<std::thread> threads;
 
-    size_t chunk_size = TOTAL_SIZE / THREAD_COUNT;
+    size_t chunk_size = SIZE_MB / THREAD_COUNT;
     chunk_size -= (chunk_size % BLOCK_SIZE);
+
+    uint64_t start_time = current_time_nsecs();
 
     for (size_t t = 0; t < THREAD_COUNT; ++t) {
         threads.emplace_back([&, t]() {
             size_t start = t * chunk_size;
-            size_t end = (t == THREAD_COUNT - 1) ? TOTAL_SIZE : start + chunk_size;
+            size_t end = (t == THREAD_COUNT - 1) ? SIZE_MB : start + chunk_size;
 
             encrypt(input + start, end - start, aes);
         });
@@ -93,11 +102,14 @@ int main() {
     for (auto& th : threads)
         th.join();
 
-    for (size_t i = 0; i < TOTAL_SIZE; i += BLOCK_SIZE)
+    uint64_t end_time = current_time_nsecs();
+    std::cout<<"elapsed time: "<< end_time - start_time<<std::endl;
+
+    for (size_t i = 0; i < SIZE_MB; i += BLOCK_SIZE)
         AES_encrypt(reference + i, reference + i, &enc_key);
 
     //correctness check
-    if (std::memcmp(input, reference, TOTAL_SIZE) == 0)
+    if (std::memcmp(input, reference, SIZE_MB) == 0)
         std::cout << "Encryption correct"<<std::endl;
     else
         std::cout << "Error in the encryption"<<std::endl;
