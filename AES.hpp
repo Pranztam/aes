@@ -5,8 +5,9 @@
 #include <exception>
 
 #include <emmintrin.h>
-#include <immintrin.h>
-#include <xmmintrin.h>
+#include <wmmintrin.>
+//#include <immintrin.h>
+//#include <xmmintrin.h>
 
 namespace Cipher {
   template <size_t key_bits = 256>
