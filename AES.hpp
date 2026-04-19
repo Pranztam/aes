@@ -6,8 +6,6 @@
 
 #include <emmintrin.h>
 #include <wmmintrin.h>
-//#include <immintrin.h>
-//#include <xmmintrin.h>
 
 namespace Cipher {
   template <size_t key_bits = 256>
