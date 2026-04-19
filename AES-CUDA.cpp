@@ -9,7 +9,7 @@
 #define AES256_ROUNDS 14
 #define EXPANDED_KEY_SIZE 240
 
-constexpr size_t BLOCK_SIZE = AES_BLOCK_SIZE;
+constexpr size_t BLOCK_SIZE = 16;
 
 using byte = unsigned char;
 
