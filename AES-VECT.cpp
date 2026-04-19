@@ -20,7 +20,7 @@ void encrypt_block(unsigned char* block);
 
 //each thread will encrypt >=8 block, calling the encrypt_block function, which is defined in AES.hpp, when the thread can't encrypt
 //any more chunks it starts processing blocks at a time
-inline void encrypt_chunk(unsigned char* data, Cipher::Aes<256>& aes) {
+inline void encrypt_8_blocks(unsigned char* data, Cipher::Aes<256>& aes) {
     aes.encrypt_block(data +  0);
     aes.encrypt_block(data + 16);
     aes.encrypt_block(data + 32);
@@ -35,7 +35,7 @@ void encrypt(unsigned char* data, size_t size, Cipher::Aes<256>& aes) {
     size_t i = 0;
 
     for (; i + 128 <= size; i += 128) {
-        encrypt_chunk(data + i, aes);
+        encrypt_8_blocks(data + i, aes);
     }
 
     for (; i < size; i += BLOCK_SIZE) {
