@@ -5,7 +5,7 @@
 #include <exception>
 
 #include <emmintrin.h>
-#include <wmmintrin.>
+#include <wmmintrin.h>
 //#include <immintrin.h>
 //#include <xmmintrin.h>
 
