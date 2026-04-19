@@ -16,8 +16,6 @@ inline uint64_t current_time_nsecs()
     return (t.tv_sec)*1000000000L + t.tv_nsec;
 }
 
-void encrypt_block(unsigned char* block);
-
 //the encryption function will encrypt the chunk using the same technique used in the openssl implementation, which is optimizing the pipeline usage
 //by keeping it almost always busy with 8 parallel encryption "streams". when the remainer of the data is not enough to warrant another call to 8-blocks
 //the encryption will proceed as normal
