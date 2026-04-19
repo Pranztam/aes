@@ -18,24 +18,14 @@ inline uint64_t current_time_nsecs()
 
 void encrypt_block(unsigned char* block);
 
-//each thread will encrypt >=8 block, calling the encrypt_block function, which is defined in AES.hpp, when the thread can't encrypt
-//any more chunks it starts processing blocks at a time
-inline void encrypt_8_blocks(unsigned char* data, Cipher::Aes<256>& aes) {
-    aes.encrypt_block(data +  0);
-    aes.encrypt_block(data + 16);
-    aes.encrypt_block(data + 32);
-    aes.encrypt_block(data + 48);
-    aes.encrypt_block(data + 64);
-    aes.encrypt_block(data + 80);
-    aes.encrypt_block(data + 96);
-    aes.encrypt_block(data + 112);
-}
-
+//the encryption function will encrypt the chunk using the same technique used in the openssl implementation, which is optimizing the pipeline usage
+//by keeping it almost always busy with 8 parallel encryption "streams". when the remainer of the data is not enough to warrant another call to 8-blocks
+//the encryption will proceed as normal
 void encrypt(unsigned char* data, size_t size, Cipher::Aes<256>& aes) {
     size_t i = 0;
 
     for (; i + 128 <= size; i += 128) {
-        encrypt_8_blocks(data + i, aes);
+        aes.encrypt_8_blocks(data + i);
     }
 
     for (; i < size; i += BLOCK_SIZE) {
