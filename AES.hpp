@@ -1,8 +1,4 @@
-#include <iostream>
-#include <limits>
-#include <climits>
 #include <cstring>
-#include <exception>
 
 #include <emmintrin.h>
 #include <wmmintrin.h>
