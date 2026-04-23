@@ -22,8 +22,8 @@ inline uint64_t current_time_nsecs()
 void encrypt(unsigned char* data, size_t size, Cipher::Aes<256>& aes) {
     size_t i = 0;
 
-    for (; i + 128 <= size; i += 128) {
-        aes.encrypt_8_blocks(data + i);
+    for (; i + 64 <= size; i += 64) {
+        aes.encrypt_4_blocks(data + i);
     }
 
     for (; i < size; i += BLOCK_SIZE) {

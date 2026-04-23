@@ -237,7 +237,7 @@ namespace Cipher {
     }
 
     //8 indipendent block encryption streams make sure to keep the pipeline full
-    void encrypt_8_blocks(unsigned char* block){
+    void encrypt_4_blocks(unsigned char* block){
       __m128i* rk = (__m128i *) round_keys;
 
       //loading the blocks in the registers
@@ -245,20 +245,12 @@ namespace Cipher {
       __m128i block_1 = _mm_loadu_si128((__m128i*)(block +  16));
       __m128i block_2 = _mm_loadu_si128((__m128i*)(block +  32));
       __m128i block_3 = _mm_loadu_si128((__m128i*)(block +  48));
-      __m128i block_4 = _mm_loadu_si128((__m128i*)(block +  64));
-      __m128i block_5 = _mm_loadu_si128((__m128i*)(block +  80));
-      __m128i block_6 = _mm_loadu_si128((__m128i*)(block +  96));
-      __m128i block_7 = _mm_loadu_si128((__m128i*)(block + 112));
 
       //round 0, only add round key
       block_0 = _mm_xor_si128(block_0, rk[0]);  
       block_1 = _mm_xor_si128(block_1, rk[0]);
       block_2 = _mm_xor_si128(block_2, rk[0]);  
       block_3 = _mm_xor_si128(block_3, rk[0]);
-      block_4 = _mm_xor_si128(block_4, rk[0]);  
-      block_5 = _mm_xor_si128(block_5, rk[0]);
-      block_6 = _mm_xor_si128(block_6, rk[0]);  
-      block_7 = _mm_xor_si128(block_7, rk[0]);
 
       //main rounds
       for (size_t i = 1; i < Nr; i++) {
@@ -266,10 +258,6 @@ namespace Cipher {
         block_1 = _mm_aesenc_si128(block_1, rk[i]);
         block_2 = _mm_aesenc_si128(block_2, rk[i]);  
         block_3 = _mm_aesenc_si128(block_3, rk[i]);
-        block_4 = _mm_aesenc_si128(block_4, rk[i]);  
-        block_5 = _mm_aesenc_si128(block_5, rk[i]);
-        block_6 = _mm_aesenc_si128(block_6, rk[i]);  
-        block_7 = _mm_aesenc_si128(block_7, rk[i]);
       }
 
       //last round
@@ -277,20 +265,12 @@ namespace Cipher {
       block_1 = _mm_aesenclast_si128(block_1, rk[Nr]);
       block_2 = _mm_aesenclast_si128(block_2, rk[Nr]);  
       block_3 = _mm_aesenclast_si128(block_3, rk[Nr]);
-      block_4 = _mm_aesenclast_si128(block_4, rk[Nr]);  
-      block_5 = _mm_aesenclast_si128(block_5, rk[Nr]);
-      block_6 = _mm_aesenclast_si128(block_6, rk[Nr]);  
-      block_7 = _mm_aesenclast_si128(block_7, rk[Nr]);
 
       //store back
       _mm_storeu_si128((__m128i*)(block +   0), block_0);
       _mm_storeu_si128((__m128i*)(block +  16), block_1);
       _mm_storeu_si128((__m128i*)(block +  32), block_2);
       _mm_storeu_si128((__m128i*)(block +  48), block_3);
-      _mm_storeu_si128((__m128i*)(block +  64), block_4);
-      _mm_storeu_si128((__m128i*)(block +  80), block_5);
-      _mm_storeu_si128((__m128i*)(block +  96), block_6);
-      _mm_storeu_si128((__m128i*)(block + 112), block_7);
     }
 
     //aes decryption of a 16 bytes block. it will overwrite the input data
