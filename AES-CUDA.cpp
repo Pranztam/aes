@@ -159,7 +159,7 @@ __device__ void AES256_encrypt_block(byte* data, const byte* roundKeys, uint32_t
     }
 
     //main rounds, which perform SubBytes, ShiftRows and MixColumns thanks to the t-tables, whose entries are 32-bits words each and contain 256 elements.
-	//more precisely the SubBytes and MixColumns is integrated in the t-tables creation, as we've seen above, whilst now we are performing a
+	//more precisely the SubBytes and MixColumns are integrated in the t-tables creation, as we've seen above, whilst now we are performing a
 	//ShiftRows operation by manipulating the state array indexes in the assignments
 	uint32_t t_table[4];
     for (int round = 1; round < AES256_ROUNDS; round++) {
