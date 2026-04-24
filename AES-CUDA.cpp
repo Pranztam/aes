@@ -113,6 +113,10 @@ __device__ void final_round(uint32_t* state, const byte* roundKey) {
     byte temp_state[16];
 
     //here we perform a SubBytes and ShiftRows operation simultaneously. Instead of assigning the value of the shifted row, we take directly the sbox value.
+    //0  4  8  12        0  4  8  12
+    //1  5  9  13   ---> 5  9  13 1
+    //2  6  10 14        10 14 2  6
+    //3  7  11 15        15 3  7  11
     temp_state[0]  = d_sbox[s[0]];
     temp_state[1]  = d_sbox[s[5]];
     temp_state[2]  = d_sbox[s[10]];
