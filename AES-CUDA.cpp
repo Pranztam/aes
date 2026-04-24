@@ -214,7 +214,7 @@ int main(int argc, char** argv) {
     }
 
     if(atoi(argv[1]) == 0 || atoi(argv[1]) > 1024){
-        std::cerr<<"Size must be between 1 and 128"<<std::endl;
+        std::cerr<<"Size must be between 1 and 1024"<<std::endl;
         return -1;
     }
 
