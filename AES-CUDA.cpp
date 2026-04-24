@@ -1,6 +1,4 @@
-#include <stdio.h>
-#include <stdint.h>
-#include <stdlib.h>
+#include <iostream>
 #include <random>
 #include <cstring>
 #include <openssl/aes.h>
