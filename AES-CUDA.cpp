@@ -110,7 +110,7 @@ __device__ void final_round(uint32_t* state, const byte* roundKey) {
 
     byte temp_state[16];
 
-    //here we perform a SubBytes and ShiftRows operation simultaneously. Instead of assigning the value of the shifted row, we take directly the sbox value.
+    //here we perform a SubBytes and ShiftRows operation simultaneously. Instead of assigning the value of the shifted row, we use corresponding sbox value.
     //0  4  8  12        0  4  8  12
     //1  5  9  13   ---> 5  9  13 1
     //2  6  10 14        10 14 2  6
@@ -146,9 +146,17 @@ __device__ void final_round(uint32_t* state, const byte* roundKey) {
 
 //main encrypting function (rounds). Note that even though the state of AES is a column oriented data structure, we can still reason in a row-like manner:
 //data input: b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 -> b0 b1 b2 b3 create a column, but in our case we receive them sequentially and therefore can treat them as a row.
-__device__ void AES256_encrypt_block(byte* data, const byte* roundKeys, uint32_t* T0, uint32_t* T1, uint32_t* T2, uint32_t* T3) {
+
+__global__ void aes256_kernel(byte* data, byte* roundKeys, size_t numBlocks, uint32_t* T0, uint32_t* T1, uint32_t* T2, uint32_t* T3){
+    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+
+    if (idx >= numBlocks) return;
+
     uint32_t state[4];
 
+    //positioning the thread on the correct data index based on its identifier
+    data = data + (idx * 16);
+    
     //create the state (4 32-bit words) from the data input
     for (int i = 0; i < 4; i++)
         state[i] = (data[i*4+0] << 24) | (data[i*4+1] << 16) | (data[i*4+2] << 8) | (data[i*4+3]);
@@ -195,14 +203,7 @@ __device__ void AES256_encrypt_block(byte* data, const byte* roundKeys, uint32_t
         data[i*4+2] = (state[i] >> 8) & 0xff;
         data[i*4+3] = state[i] & 0xff;
     }
-}
-
-__global__ void aes256_kernel(byte* data, byte* roundKeys, size_t numBlocks, uint32_t* T0, uint32_t* T1, uint32_t* T2, uint32_t* T3){
-    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-    if (idx >= numBlocks) return;
-
-    AES256_encrypt_block(&data[idx * 16], roundKeys, T0, T1, T2, T3);
+    
 }
 
 int main(int argc, char** argv) {
