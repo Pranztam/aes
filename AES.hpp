@@ -236,7 +236,7 @@ namespace Cipher {
       _mm_storeu_si128((__m128i *) (block), state);
     }
 
-    //8 indipendent block encryption streams make sure to keep the pipeline full
+    //4 indipendent block encryption streams make sure to keep the pipeline full
     void encrypt_4_blocks(unsigned char* block){
       __m128i* rk = (__m128i *) round_keys;
 
