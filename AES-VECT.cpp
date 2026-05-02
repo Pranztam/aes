@@ -3,7 +3,7 @@
 #include <random>
 #include <cstring>
 #include <iostream>
-#include <openssl/aes.h>
+#include <openssl/evp.h>
 #include "AES.hpp"
 
 constexpr size_t THREAD_COUNT = 32;
@@ -19,15 +19,41 @@ inline uint64_t current_time_nsecs()
 //the encryption function will encrypt the chunk using the same technique used in the openssl implementation, which is optimizing the pipeline usage
 //by keeping it almost always busy with 8 parallel encryption "streams". when the remainer of the data is not enough to warrant another call to 8-blocks
 //the encryption will proceed as normal
-void encrypt(unsigned char* data, size_t size, Cipher::Aes<256>& aes) {
+void encrypt(unsigned char* data, const size_t size, const unsigned char* nonce, size_t counter, Cipher::Aes<256>& aes) {
     size_t i = 0;
 
-    for (; i + 64 <= size; i += 64) {
-        aes.encrypt_4_blocks(data + i);
+    //if size allows for it, we compute the nonce into the states and proceed to loop remembering that state(i) = nonce | counter(i)
+    if(i + 64 <= size){
+        unsigned char states[64];
+        for (; i + 64 <= size; i += 64) {
+            for(int j = 0; j < 4; j++){
+                memcpy(states+j*16,nonce,12);
+                uint32_t ctr = static_cast<uint32_t>(counter++);
+                states[j*16 + 12] = (ctr >> 24) & 0xff;
+                states[j*16 + 13] = (ctr >> 16) & 0xff;
+                states[j*16 + 14] = (ctr >>  8) & 0xff;
+                states[j*16 + 15] = ctr & 0xff;
+            }
+            aes.encrypt_4_blocks(states);
+            for (int j = 0; j < 64; j++)
+                data[i + j] ^= states[j];
+        }
     }
 
-    for (; i < size; i += BLOCK_SIZE) {
-        aes.encrypt_block(data + i);
+    if(i < size){
+        unsigned char state[16];        
+        for (; i < size; i += BLOCK_SIZE) {
+            memcpy(state,nonce,12);
+            uint32_t ctr = static_cast<uint32_t>(counter++);
+            state[12] = (ctr >> 24) & 0xff;
+            state[13] = (ctr >> 16) & 0xff;
+            state[14] = (ctr >>  8) & 0xff;
+            state[15] = ctr & 0xff;
+            
+            aes.encrypt_block(state);
+            for (int j = 0; j < 16; j++)
+                data[i + j] ^= state[j];
+        }
     }
 }
 
@@ -63,13 +89,18 @@ int main(int argc, char **argv) {
     for (int i = 0; i < 32; ++i)
         key[i] = static_cast<unsigned char>(dist(gen));
 
+    //nonce generation
+    unsigned char nonce[12];
+    for (int i = 0; i < 12; i++)
+        nonce[i] = static_cast<unsigned char>(dist(gen));
+
 	//the Aes class takes care of the key expansion within its constructor
     Cipher::Aes<256> aes(key);
 
  
     //key generation for the openssl check
-    AES_KEY enc_key;
-    AES_set_encrypt_key(key, 256, &enc_key);
+    // AES_KEY enc_key;
+    // AES_set_encrypt_key(key, 256, &enc_key);
 
     std::vector<std::thread> threads;
 
@@ -83,7 +114,7 @@ int main(int argc, char **argv) {
             size_t start = t * chunk_size;
             size_t end = (t == THREAD_COUNT - 1) ? SIZE_MB : start + chunk_size;
 
-            encrypt(input + start, end - start, aes);
+            encrypt(input + start, end - start, nonce, start/16, aes);
         });
     }
 
@@ -93,8 +124,18 @@ int main(int argc, char **argv) {
     uint64_t end_time = current_time_nsecs();
     std::cout<<"elapsed time: "<< end_time - start_time<<std::endl;
 
-    for (size_t i = 0; i < SIZE_MB; i += BLOCK_SIZE)
-        AES_encrypt(reference + i, reference + i, &enc_key);
+    // for (size_t i = 0; i < SIZE_MB; i += BLOCK_SIZE)
+        // AES_encrypt(reference + i, reference + i, &enc_key);
+    
+    unsigned char iv[16];
+    memcpy(iv, nonce, 12);
+    iv[12] = iv[13] = iv[14] = iv[15] = 0;
+
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    EVP_EncryptInit_ex(ctx, EVP_aes_256_ctr(), NULL, key, iv);
+    int outlen;
+    EVP_EncryptUpdate(ctx, reference, &outlen, reference, SIZE_MB);
+    EVP_CIPHER_CTX_free(ctx);
 
     //correctness check
     if (std::memcmp(input, reference, SIZE_MB) == 0)
