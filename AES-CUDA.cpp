@@ -1,7 +1,7 @@
 #include <iostream>
 #include <random>
 #include <cstring>
-#include <openssl/aes.h>
+#include <openssl/evp.h>
 #include "AES.hpp"
 
 #define AES256_ROUNDS 14
@@ -147,19 +147,17 @@ __device__ void final_round(uint32_t* state, const byte* roundKey) {
 //main encrypting function (rounds). Note that even though the state of AES is a column oriented data structure, we can still reason in a row-like manner:
 //data input: b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 -> b0 b1 b2 b3 create a column, but in our case we receive them sequentially and therefore can treat them as a row.
 
-__global__ void aes256_kernel(byte* data, byte* roundKeys, size_t numBlocks, uint32_t* T0, uint32_t* T1, uint32_t* T2, uint32_t* T3){
+__global__ void aes256_kernel(byte* data, byte* roundKeys, byte* nonce, size_t numBlocks, uint32_t* T0, uint32_t* T1, uint32_t* T2, uint32_t* T3){
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx >= numBlocks) return;
 
-    uint32_t state[4];
-
-    //positioning the thread on the correct data index based on its identifier
-    data = data + (idx * 16);
+    //creating the state that will be encrypted. It contains nonce || ctr. In our case idx is a perfect ctr
+    uint32_t state[4];  
+    for(int i = 0; i < 3; i++)
+        state[i] = (nonce[i*4+0] << 24) | (nonce[i*4+1] << 16) | (nonce[i*4+2] << 8) | (nonce[i*4+3]);
+    state[3] = static_cast<uint32_t>(idx); 
     
-    //create the state (4 32-bit words) from the data input
-    for (int i = 0; i < 4; i++)
-        state[i] = (data[i*4+0] << 24) | (data[i*4+1] << 16) | (data[i*4+2] << 8) | (data[i*4+3]);
 
     //before the regular rounds, we perform the first add round key after we compact the expanded key in 32-bit words (in regular rounds, the add round key operation does the same thing
     //except in final round, whose unit of work is bytes instead of 32-bit words. See final_round() above)
@@ -197,11 +195,13 @@ __global__ void aes256_kernel(byte* data, byte* roundKeys, size_t numBlocks, uin
     final_round(state, roundKeys + AES256_ROUNDS * 16);
 
     //store back the state in the data array by decomposing it in bytes again
+    //positioning the thread on the correct data index based on its identifier
+    data = data + (idx * 16);
     for (int i = 0; i < 4; i++) {
-        data[i*4+0] = (state[i] >> 24) & 0xff;
-        data[i*4+1] = (state[i] >> 16) & 0xff;
-        data[i*4+2] = (state[i] >> 8) & 0xff;
-        data[i*4+3] = state[i] & 0xff;
+        data[i*4+0] ^= (state[i] >> 24) & 0xff;
+        data[i*4+1] ^= (state[i] >> 16) & 0xff;
+        data[i*4+2] ^= (state[i] >> 8) & 0xff;
+        data[i*4+3] ^= state[i] & 0xff;
     }
     
 }
@@ -239,6 +239,11 @@ int main(int argc, char** argv) {
     for (int i = 0; i < 32; ++i)
         key[i] = static_cast<byte>(dist(gen));
 
+    //nonce generation
+    byte h_nonce[12];
+    for (int i = 0; i < 12; i++)
+        h_nonce[i] = static_cast<byte>(dist(gen));
+
 	//here we call the constructor of the class cipher, included in AES.hpp, which transforms the key passed as a parameter
 	//into an expanded key of 240 bits
     Cipher::Aes<256> aes(key);
@@ -253,13 +258,16 @@ int main(int argc, char** argv) {
     int blocks = (numBlocks + threads - 1) / threads;
 
     //d_data = device data, d_keys = expanded key for aes256 (240 bits)
-    byte *d_data, *d_keys;
+    byte *d_data, *d_keys, *d_nonce;
+
 
     uint64_t start_time = current_time_nsecs();
 
     gpuErrchk(cudaMalloc(&d_data, SIZE_MB));
+    gpuErrchk(cudaMalloc(&d_nonce, 12));
     gpuErrchk(cudaMalloc(&d_keys, EXPANDED_KEY_SIZE));
     gpuErrchk(cudaMemcpy(d_data, h_data, SIZE_MB, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMemcpy(d_nonce, h_nonce, 12, cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpy(d_keys, aes.getRoundKeys(), EXPANDED_KEY_SIZE, cudaMemcpyHostToDevice));
 
     gpuErrchk(cudaMalloc(&d_T0, 256 * sizeof(uint32_t)));
@@ -273,19 +281,36 @@ int main(int argc, char** argv) {
 	gpuErrchk(cudaMemcpy(d_T3, h_T3, 256 * sizeof(uint32_t), cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpyToSymbol(d_sbox, h_sbox, 256));
 
-    aes256_kernel<<<blocks, threads>>>(d_data, d_keys, numBlocks, d_T0, d_T1, d_T2, d_T3);
+    // int blockSize;
+    // int minGridSize;
+
+    // cudaOccupancyMaxPotentialBlockSize(
+    //     &minGridSize,
+    //     &blockSize,
+    //     aes256_kernel,
+    //     0,  // dynamic shared memory
+    //     0   // block size limit (0 = no limit)
+    // );
+    // cout<<"block size: "<<blockSize<<endl<<endl;  
+
+    aes256_kernel<<<blocks, threads>>>(d_data, d_keys, d_nonce, numBlocks, d_T0, d_T1, d_T2, d_T3);
     gpuErrchk(cudaDeviceSynchronize());
     gpuErrchk(cudaMemcpy(h_data, d_data, SIZE_MB, cudaMemcpyDeviceToHost));
 
     uint64_t end_time = current_time_nsecs();
     std::cout<<"elapsed time: "<< end_time - start_time<<std::endl;
 
-    //correctness check
-    AES_KEY enc_key;
-    AES_set_encrypt_key(key, 256, &enc_key);
+    //correctness check comparing the original data array and a reference array encrypted using an OpenSSL library function
+    byte iv[16];
+    memcpy(iv, h_nonce, 12);
+    iv[12] = iv[13] = iv[14] = iv[15] = 0;
 
-    for (size_t i = 0; i < SIZE_MB; i += BLOCK_SIZE)
-        AES_encrypt(reference + i, reference + i, &enc_key);
+    EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
+    EVP_EncryptInit_ex(ctx, EVP_aes_256_ctr(), NULL, key, iv);
+
+    int outlen;
+    EVP_EncryptUpdate(ctx, reference, &outlen, reference, SIZE_MB);
+    EVP_CIPHER_CTX_free(ctx);
 
     if (memcmp(h_data, reference, SIZE_MB) == 0)
         std::cout << "Encryption correct"<<std::endl;
@@ -294,6 +319,7 @@ int main(int argc, char** argv) {
     
     gpuErrchk(cudaFree(d_data));
     gpuErrchk(cudaFree(d_keys));
+    gpuErrchk(cudaFree(d_nonce));
     gpuErrchk(cudaFree(d_T0));
     gpuErrchk(cudaFree(d_T1));
     gpuErrchk(cudaFree(d_T2));
