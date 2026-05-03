@@ -281,18 +281,6 @@ int main(int argc, char** argv) {
 	gpuErrchk(cudaMemcpy(d_T3, h_T3, 256 * sizeof(uint32_t), cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpyToSymbol(d_sbox, h_sbox, 256));
 
-    // int blockSize;
-    // int minGridSize;
-
-    // cudaOccupancyMaxPotentialBlockSize(
-    //     &minGridSize,
-    //     &blockSize,
-    //     aes256_kernel,
-    //     0,  // dynamic shared memory
-    //     0   // block size limit (0 = no limit)
-    // );
-    // cout<<"block size: "<<blockSize<<endl<<endl;  
-
     aes256_kernel<<<blocks, threads>>>(d_data, d_keys, d_nonce, numBlocks, d_T0, d_T1, d_T2, d_T3);
     gpuErrchk(cudaDeviceSynchronize());
     gpuErrchk(cudaMemcpy(h_data, d_data, SIZE_MB, cudaMemcpyDeviceToHost));
