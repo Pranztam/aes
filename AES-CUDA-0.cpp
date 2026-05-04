@@ -289,10 +289,6 @@ int main(int argc, char** argv) {
     uint64_t end_time = current_time_nsecs();
     std::cout<<"elapsed time: "<< end_time - start_time<<std::endl;
 
-    // std::ofstream file("measurements.txt", std::ios::app);
-    // if (file.is_open())
-    //     file << end_time - start_time << "\n";
-
     //correctness check comparing the original data array and a reference array encrypted using an OpenSSL library function
     byte iv[16];
     memcpy(iv, h_nonce, 12);
