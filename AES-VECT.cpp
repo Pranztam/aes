@@ -3,6 +3,7 @@
 #include <random>
 #include <cstring>
 #include <iostream>
+#include <fstream>
 #include <openssl/evp.h>
 #include "AES.hpp"
 
@@ -97,11 +98,6 @@ int main(int argc, char **argv) {
 	//the Aes class takes care of the key expansion within its constructor
     Cipher::Aes<256> aes(key);
 
- 
-    //key generation for the openssl check
-    // AES_KEY enc_key;
-    // AES_set_encrypt_key(key, 256, &enc_key);
-
     std::vector<std::thread> threads;
 
     size_t chunk_size = SIZE_MB / THREAD_COUNT;
@@ -124,8 +120,9 @@ int main(int argc, char **argv) {
     uint64_t end_time = current_time_nsecs();
     std::cout<<"elapsed time: "<< end_time - start_time<<std::endl;
 
-    // for (size_t i = 0; i < SIZE_MB; i += BLOCK_SIZE)
-        // AES_encrypt(reference + i, reference + i, &enc_key);
+    // std::ofstream file("measurements.txt", std::ios::app); // append mode
+    // if (file.is_open())
+    //     file << end_time - start_time << "\n";
     
     unsigned char iv[16];
     memcpy(iv, nonce, 12);
