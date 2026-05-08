@@ -228,11 +228,12 @@ __global__ void aes256_kernel(byte* data, size_t numBlocks, uint32_t (*d_T0)[9],
         state[3] = t_table[3];
 
     }
+
     #undef LOOKUP
+    
     //perform final round (see final_round()) above
     final_round(state, roundKeys + AES256_ROUNDS * 16);
 
-    //store back the state in the data array by decomposing it in bytes again
     //positioning the thread on the correct data index based on its identifier
     //in order to remove uncoalesced global accesses we use uint4 variables, letting us move 128bits in one swoop.
     uint4* out = reinterpret_cast<uint4*>(data + idx * 16);
