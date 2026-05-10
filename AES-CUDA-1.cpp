@@ -2,6 +2,9 @@
 #include <random>
 #include <cstring>
 #include <openssl/evp.h>
+#include <vector>
+#include <algorithm>
+#include <filesystem>
 #include <fstream>
 #include "AES.hpp"
 
@@ -32,6 +35,32 @@ inline uint64_t current_time_nsecs()
     struct timespec t;
     clock_gettime(CLOCK_REALTIME, &t);
     return (t.tv_sec)*1000000000L + t.tv_nsec;
+}
+
+//function to read from a file with arbitrary length, adding padding if necessary (block size is 16 byte, the total size must be a multiple)
+std::vector<byte> read_file(const std::string& filename) {
+
+    if (!std::filesystem::exists(filename)) {
+        std::cerr << "Error: file not found: " << filename << std::endl;
+        return {};
+    }
+
+    auto file_size = std::filesystem::file_size(filename);
+    if (file_size == 0) {
+        std::cerr << "Error: file is empty: " << filename << std::endl;
+        return {};
+    }
+    size_t padded_size = file_size + (16 - file_size % 16) % 16;
+
+    //we're padding with 0 if needed
+    std::vector<byte> buffer(padded_size, 0);
+    
+    std::ifstream f(filename, std::ios::binary);
+    f.read(reinterpret_cast<char*>(buffer.data()), file_size);
+
+    std::cout << "Read " << file_size << " bytes from " << filename << ", padded to " << padded_size << std::endl;
+
+    return buffer;
 }
 
 byte h_sbox[256] = {
@@ -150,8 +179,6 @@ __device__ void final_round(uint32_t* state, const byte* roundKey) {
 __global__ void aes256_kernel(byte* data, size_t numBlocks, uint32_t *d_T0, uint32_t *d_T1, uint32_t *d_T2, uint32_t *d_T3){
     size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
 
-    if (idx >= numBlocks) return;
-
     __shared__ uint32_t T0[256];
     __shared__ uint32_t T1[256];
     __shared__ uint32_t T2[256];
@@ -163,6 +190,8 @@ __global__ void aes256_kernel(byte* data, size_t numBlocks, uint32_t *d_T0, uint
     T3[threadIdx.x] = d_T3[threadIdx.x];
 
     __syncthreads();
+    
+    if (idx >= numBlocks) return;
 
     //creating the state that will be encrypted. It contains nonce || ctr. In our case idx is a perfect ctr
     uint32_t state[4];  
@@ -221,45 +250,52 @@ __global__ void aes256_kernel(byte* data, size_t numBlocks, uint32_t *d_T0, uint
 
 int main(int argc, char** argv) {
     if(argc < 2){
-        std::cerr<<"Usage: ./AES-CUDA <size of text to generate in MB>"<<std::endl;
+        std::cerr<<"Usage: ./AES-CUDA-1 --file <filename> or ./AES-CUDA-1 <size of text to generate in MB>"<<std::endl;
         return -1;
     }
-
-    if(atoi(argv[1]) == 0 || atoi(argv[1]) > 1024){
-        std::cerr<<"Size must be between 1 and 1024"<<std::endl;
-        return -1;
-    }
-
-    size_t SIZE_MB = atoi(argv[1])*1024*1024;
 
     std::random_device rd;
     std::mt19937 gen(rd());
     std::uniform_int_distribution<int> dist(0, 255);
 
-    //plaintext generation
-    byte* h_data = (byte*)malloc(SIZE_MB);
-    for (size_t i = 0; i < SIZE_MB; i++)
-        h_data[i] = static_cast<byte>(dist(gen));
+    std::vector<byte> h_data;
+
+    if (strcmp(argv[1], "--file") == 0) {
+        if (argc < 3) {
+            std::cerr << "Error: --file requires a filename" << std::endl;
+            return -1;
+        }
+
+        //plaintext from a file
+        h_data = read_file(argv[2]);
+        if (h_data.empty()) return -1;
+
+    } else {
+
+        //plaintext generated with a given size
+        if (atoi(argv[1]) == 0 || atoi(argv[1]) > 1024) {
+            std::cerr << "Size must be between 1 and 1024 MB" << std::endl;
+            return -1;
+        }
+
+        h_data.resize(atoi(argv[1])*1024*1024);
+        std::generate(h_data.begin(), h_data.end(), [&]() { return static_cast<byte>(dist(gen)); });
+    }
 
     //save original plain text in reference before copying the encrypted data back in h_data
-    byte* reference = (byte*)malloc(SIZE_MB);
-    memcpy(reference, h_data, SIZE_MB);
+    std::vector<byte> reference = h_data;
+    size_t numBlocks = h_data.size() / 16;
 
-    size_t numBlocks = SIZE_MB / 16;
+    //key and nonce generation
+    std::vector<byte> key(32);
+    std::vector<byte> h_nonce(12);
 
-    //key generation
-    byte key[32];
-    for (int i = 0; i < 32; ++i)
-        key[i] = static_cast<byte>(dist(gen));
-
-    //nonce generation
-    byte h_nonce[12];
-    for (int i = 0; i < 12; i++)
-        h_nonce[i] = static_cast<byte>(dist(gen));
+    std::generate(key.begin(), key.end(), [&]() { return static_cast<byte>(dist(gen)); });
+    std::generate(h_nonce.begin(), h_nonce.end(), [&]() { return static_cast<byte>(dist(gen)); });
 
 	//here we call the constructor of the class cipher, included in AES.hpp, which transforms the key passed as a parameter
 	//into an expanded key of 240 bits
-    Cipher::Aes<256> aes(key);
+    Cipher::Aes<256> aes(key.data());
 
     //t-tables creation
     uint32_t h_T0[256],  h_T1[256], h_T2[256], h_T3[256];
@@ -274,11 +310,11 @@ int main(int argc, char** argv) {
 
     uint64_t start_time = current_time_nsecs();
 
-    gpuErrchk(cudaMalloc(&d_data, SIZE_MB));
-    gpuErrchk(cudaMemcpy(d_data, h_data, SIZE_MB, cudaMemcpyHostToDevice));
+    gpuErrchk(cudaMalloc(&d_data, h_data.size()));
+    gpuErrchk(cudaMemcpy(d_data, h_data.data(), h_data.size(), cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpyToSymbol(d_sbox, h_sbox, 256));
     gpuErrchk(cudaMemcpyToSymbol(roundKeys, aes.getRoundKeys(), EXPANDED_KEY_SIZE));
-    gpuErrchk(cudaMemcpyToSymbol(nonce, h_nonce, 12));
+    gpuErrchk(cudaMemcpyToSymbol(nonce, h_nonce.data(), 12));
 
     gpuErrchk(cudaMalloc(&d_T0, 256 * sizeof(uint32_t)));
     gpuErrchk(cudaMalloc(&d_T1, 256 * sizeof(uint32_t)));
@@ -291,7 +327,7 @@ int main(int argc, char** argv) {
 
     aes256_kernel<<<blocks, threads>>>(d_data, numBlocks, d_T0, d_T1, d_T2, d_T3);
     gpuErrchk(cudaDeviceSynchronize());
-    gpuErrchk(cudaMemcpy(h_data, d_data, SIZE_MB, cudaMemcpyDeviceToHost));
+    gpuErrchk(cudaMemcpy(h_data.data(), d_data, h_data.size(), cudaMemcpyDeviceToHost));
 
     uint64_t end_time = current_time_nsecs();
     std::cout<<"elapsed time: "<< end_time - start_time<<std::endl;
@@ -302,17 +338,17 @@ int main(int argc, char** argv) {
 
     //correctness check comparing the original data array and a reference array encrypted using an OpenSSL library function
     byte iv[16];
-    memcpy(iv, h_nonce, 12);
+    memcpy(iv, h_nonce.data(), 12);
     iv[12] = iv[13] = iv[14] = iv[15] = 0;
 
     EVP_CIPHER_CTX* ctx = EVP_CIPHER_CTX_new();
-    EVP_EncryptInit_ex(ctx, EVP_aes_256_ctr(), NULL, key, iv);
+    EVP_EncryptInit_ex(ctx, EVP_aes_256_ctr(), NULL, key.data(), iv);
 
     int outlen;
-    EVP_EncryptUpdate(ctx, reference, &outlen, reference, SIZE_MB);
+    EVP_EncryptUpdate(ctx, reference.data(), &outlen, reference.data(), reference.size());
     EVP_CIPHER_CTX_free(ctx);
 
-    if (memcmp(h_data, reference, SIZE_MB) == 0)
+    if (memcmp(h_data.data(), reference.data(), h_data.size()) == 0)
         std::cout << "Encryption correct"<<std::endl;
     else
         std::cout << "Error in the encryption"<<std::endl;
@@ -322,9 +358,6 @@ int main(int argc, char** argv) {
     gpuErrchk(cudaFree(d_T1));
     gpuErrchk(cudaFree(d_T2));
     gpuErrchk(cudaFree(d_T3));
-
-    free(h_data);
-    free(reference);
 
     return 0;
 }
