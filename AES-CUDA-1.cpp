@@ -16,10 +16,6 @@ constexpr size_t BLOCK_SIZE = 16;
 
 using byte = unsigned char;
 
-__constant__ byte d_sbox[256];
-__constant__ byte roundKeys[EXPANDED_KEY_SIZE];
-__constant__ byte nonce[12];
-
 inline void gpuAssert(cudaError_t code, const char *file, int line)
 {
     if (code != cudaSuccess) {
@@ -63,6 +59,10 @@ std::vector<byte> read_file(const std::string& filename) {
     return buffer;
 }
 
+__constant__ byte roundKeys[EXPANDED_KEY_SIZE];
+__constant__ byte nonce[12];
+__device__ byte d_sbox[256];
+
 byte h_sbox[256] = {
         0x63, 0x7c, 0x77, 0x7b, 0xf2, 0x6b, 0x6f, 0xc5, 0x30, 0x01, 0x67, 0x2b, 0xfe, 0xd7, 0xab, 0x76,
         0xca, 0x82, 0xc9, 0x7d, 0xfa, 0x59, 0x47, 0xf0, 0xad, 0xd4, 0xa2, 0xaf, 0x9c, 0xa4, 0x72, 0xc0,
@@ -105,29 +105,115 @@ uint32_t rotate_word(uint32_t x) {
 }
 
 //creation of the 4-tables
-void t_tables(uint32_t* T0, uint32_t* T1, uint32_t* T2, uint32_t* T3) {
-    for (int x = 0; x < 256; x++) {
+void t_tables(uint4* T) {
 
-        //the base value of the computation of the t-table is taken from the sbox so that it can substitute the SubBytes operation in the main rounds
-        byte s = h_sbox[x];
-        
+    for (int idx = 0; idx < 256; idx++) {
+        byte s  = h_sbox[idx];
         byte s2 = gmul(s, 2);
         byte s3 = gmul(s, 3);
+        uint32_t t  = (s2 << 24) | (s << 16) | (s << 8) | s3;
+        uint32_t t1 = rotate_word(t);
+        uint32_t t2 = rotate_word(t1);
+        uint32_t t3 = rotate_word(t2);
 
-        //creating each entry of t-tables(32 bit words) -> with this structure we can see the coefficients of the first column of the mixcolumn matrix, which are 2,1,1,3
-        //the other 3 tables are obtained by just rotating the row left of 1 byte and represent the other 3 rows of the mix column matrix coefficients.
-        uint32_t t = (s2 << 24) | (s  << 16) | (s  << 8) | (s3);
+        // XOR-permuted position
+        // int row = idx >> 5;
+        // int col = (idx & 31) ^ row;
+        T[idx] = {t, t1, t2, t3};        
 
-        T0[x] = t;
-        T1[x] = rotate_word(t);
-        T2[x] = rotate_word(T1[x]);
-        T3[x] = rotate_word(T2[x]);
     }
 }
 
 //last round (14th) of the 256 bit encryption. It requires a separate computation because it does not perform a mixcolumn operation
 //for simplicity of writing, it has been separated from the main rounds computation where we can use bytes instead of 32 bit words as units.
-__device__ void final_round(uint32_t* state, const byte* roundKey) {
+__device__ void final_round(uint32_t* state, const byte* roundKey, const byte* s_sbox);
+
+//main encrypting function (rounds). Note that even though the state of AES is a column oriented data structure, we can still reason in a row-like manner:
+//data input: b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 -> b0 b1 b2 b3 create a column, but in our case we receive them sequentially and therefore can treat them as a row.
+__global__ void aes256_kernel(byte* data, size_t numBlocks, uint4* d_T){
+    size_t stride = (size_t)gridDim.x * blockDim.x;
+    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+    bool thread_bound_check = (tid + 7 * stride) < numBlocks;
+
+    __shared__ uint32_t T0[256];
+    __shared__ uint32_t T1[256];
+    __shared__ uint32_t T2[256];
+    __shared__ uint32_t T3[256];
+    __shared__ byte s_sbox[256];
+
+    //in order to remove uncoalesced global accesses we use uint4 variables, letting us move 128bits in one swoop.
+    //the x,y,z,w indexes contain, in order, the t-tables from T0 to T1
+    uint4 table_entry = d_T[threadIdx.x];
+    T0[threadIdx.x] = table_entry.x;
+    T1[threadIdx.x] = table_entry.y;
+    T2[threadIdx.x] = table_entry.z;
+    T3[threadIdx.x] = table_entry.w;
+    s_sbox[threadIdx.x] = d_sbox[threadIdx.x];
+
+    __syncthreads();
+
+    //we want to work on 8 blocks per thread. Each thread encrypts 8 blocks in a stride pattern.
+    for (int b = 0; b < 8; b++) {
+        size_t idx = tid + b * stride;
+        if (!thread_bound_check && idx >= numBlocks) return;
+
+        //creating the state that will be encrypted. It contains nonce || ctr. In our case idx is a perfect ctr
+        uint32_t state[4];  
+        for(int i = 0; i < 3; i++)
+            state[i] = (nonce[i*4+0] << 24) | (nonce[i*4+1] << 16) | (nonce[i*4+2] << 8) | (nonce[i*4+3]);
+        state[3] = static_cast<uint32_t>(idx); 
+        
+
+        //before the regular rounds, we perform the first add round key after we compact the expanded key in 32-bit words (in regular rounds, the add round key operation does the same thing
+        //except in final round, whose unit of work is bytes instead of 32-bit words. See final_round() above)
+        for (int i = 0; i < 4; i++) {
+            uint32_t comp_k = (roundKeys[i*4+0] << 24) | (roundKeys[i*4+1] << 16) | (roundKeys[i*4+2] << 8) | (roundKeys[i*4+3]);
+            state[i] ^= comp_k;
+        }
+
+        //macro to simplify the t-tables lookup with the XOR structure by simply calulating the indexes in the same way
+        //main rounds, which perform SubBytes, ShiftRows and MixColumns thanks to the t-tables, whose entries are 32-bits words each and contain 256 elements.
+	    //more precisely the SubBytes and MixColumns are integrated in the t-tables creation, as we've seen above, whilst now we are performing a
+	    //ShiftRows operation by manipulating the state array indexes in the assignments
+
+	    uint32_t t_table[4];
+        for (int round = 1; round < AES256_ROUNDS; round++) {
+
+            t_table[0] = T0[(state[0] >> 24) & 0xff] ^ T1[(state[1] >> 16) & 0xff] ^ T2[(state[2] >> 8) & 0xff] ^ T3[(state[3]) & 0xff];
+            t_table[1] = T0[(state[1] >> 24) & 0xff] ^ T1[(state[2] >> 16) & 0xff] ^ T2[(state[3] >> 8) & 0xff] ^ T3[(state[0]) & 0xff];
+            t_table[2] = T0[(state[2] >> 24) & 0xff] ^ T1[(state[3] >> 16) & 0xff] ^ T2[(state[0] >> 8) & 0xff] ^ T3[(state[1]) & 0xff];
+            t_table[3] = T0[(state[3] >> 24) & 0xff] ^ T1[(state[0] >> 16) & 0xff] ^ T2[(state[1] >> 8) & 0xff] ^ T3[(state[2]) & 0xff];
+
+            //add round key
+            for (int i = 0; i < 4; i++) {
+                uint32_t comp_k = (roundKeys[round*16 + i*4+0] << 24) | (roundKeys[round*16 + i*4+1] << 16) | (roundKeys[round*16 + i*4+2] << 8) | (roundKeys[round*16 + i*4+3]);
+	    		t_table[i] ^= comp_k;
+            }
+
+            //finally we recreate the state from the t-tables
+            state[0] = t_table[0];
+            state[1] = t_table[1];
+            state[2] = t_table[2];
+            state[3] = t_table[3];
+
+        }
+
+        //perform final round (see final_round()) above
+        final_round(state, roundKeys + AES256_ROUNDS * 16, s_sbox);
+
+        //positioning the thread on the correct data index based on its identifier
+        //in order to remove uncoalesced global accesses we use uint4 variables, letting us move 128bits in one swoop.
+        uint4* out = reinterpret_cast<uint4*>(data + idx * 16);
+
+        //before storing the data back we change its endianness to match the hosts'. In the normal version we don't need to do this because we store byte by byte. 
+        out->x ^= __byte_perm(state[0], 0, 0x0123);
+        out->y ^= __byte_perm(state[1], 0, 0x0123);
+        out->z ^= __byte_perm(state[2], 0, 0x0123);
+        out->w ^= __byte_perm(state[3], 0, 0x0123);
+    }
+}
+
+__device__ void final_round(uint32_t* state, const byte* roundKey, const byte* s_sbox) {
     byte s[16];
 
     //we don't need the state represented as 4 32-bit words, so we extract each byte
@@ -145,25 +231,25 @@ __device__ void final_round(uint32_t* state, const byte* roundKey) {
     //1  5  9  13   ---> 5  9  13 1
     //2  6  10 14        10 14 2  6
     //3  7  11 15        15 3  7  11
-    temp_state[0]  = d_sbox[s[0]];
-    temp_state[1]  = d_sbox[s[5]];
-    temp_state[2]  = d_sbox[s[10]];
-    temp_state[3]  = d_sbox[s[15]];
+    temp_state[0]  = s_sbox[s[0]];
+    temp_state[1]  = s_sbox[s[5]];
+    temp_state[2]  = s_sbox[s[10]];
+    temp_state[3]  = s_sbox[s[15]];
 
-    temp_state[4]  = d_sbox[s[4]];
-    temp_state[5]  = d_sbox[s[9]];
-    temp_state[6]  = d_sbox[s[14]];
-    temp_state[7]  = d_sbox[s[3]];
+    temp_state[4]  = s_sbox[s[4]];
+    temp_state[5]  = s_sbox[s[9]];
+    temp_state[6]  = s_sbox[s[14]];
+    temp_state[7]  = s_sbox[s[3]];
 
-    temp_state[8]  = d_sbox[s[8]];
-    temp_state[9]  = d_sbox[s[13]];
-    temp_state[10] = d_sbox[s[2]];
-    temp_state[11] = d_sbox[s[7]];
+    temp_state[8]  = s_sbox[s[8]];
+    temp_state[9]  = s_sbox[s[13]];
+    temp_state[10] = s_sbox[s[2]];
+    temp_state[11] = s_sbox[s[7]];
 
-    temp_state[12] = d_sbox[s[12]];
-    temp_state[13] = d_sbox[s[1]];
-    temp_state[14] = d_sbox[s[6]];
-    temp_state[15] = d_sbox[s[11]];
+    temp_state[12] = s_sbox[s[12]];
+    temp_state[13] = s_sbox[s[1]];
+    temp_state[14] = s_sbox[s[6]];
+    temp_state[15] = s_sbox[s[11]];
 
     //adding round key
     for (int i = 0; i < 16; i++)
@@ -172,80 +258,6 @@ __device__ void final_round(uint32_t* state, const byte* roundKey) {
     //recreating the 4 32-bit words comprising the state
     for (int i = 0; i < 4; i++)
         state[i] = (temp_state[i*4+0] << 24) | (temp_state[i*4+1] << 16) | (temp_state[i*4+2] << 8) | (temp_state[i*4+3]);
-}
-
-//main encrypting function (rounds). Note that even though the state of AES is a column oriented data structure, we can still reason in a row-like manner:
-//data input: b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 -> b0 b1 b2 b3 create a column, but in our case we receive them sequentially and therefore can treat them as a row.
-__global__ void aes256_kernel(byte* data, size_t numBlocks, uint32_t *d_T0, uint32_t *d_T1, uint32_t *d_T2, uint32_t *d_T3){
-    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
-
-    __shared__ uint32_t T0[256];
-    __shared__ uint32_t T1[256];
-    __shared__ uint32_t T2[256];
-    __shared__ uint32_t T3[256];
-
-    T0[threadIdx.x] = d_T0[threadIdx.x];
-    T1[threadIdx.x] = d_T1[threadIdx.x];
-    T2[threadIdx.x] = d_T2[threadIdx.x];
-    T3[threadIdx.x] = d_T3[threadIdx.x];
-
-    __syncthreads();
-    
-    if (idx >= numBlocks) return;
-
-    //creating the state that will be encrypted. It contains nonce || ctr. In our case idx is a perfect ctr
-    uint32_t state[4];  
-    for(int i = 0; i < 3; i++)
-        state[i] = (nonce[i*4+0] << 24) | (nonce[i*4+1] << 16) | (nonce[i*4+2] << 8) | (nonce[i*4+3]);
-    state[3] = static_cast<uint32_t>(idx); 
-    
-
-    //before the regular rounds, we perform the first add round key after we compact the expanded key in 32-bit words (in regular rounds, the add round key operation does the same thing
-    //except in final round, whose unit of work is bytes instead of 32-bit words. See final_round() above)
-    for (int i = 0; i < 4; i++) {
-        uint32_t comp_k = (roundKeys[i*4+0] << 24) | (roundKeys[i*4+1] << 16) | (roundKeys[i*4+2] << 8) | (roundKeys[i*4+3]);
-        state[i] ^= comp_k;
-    }
-
-    //main rounds, which perform SubBytes, ShiftRows and MixColumns thanks to the t-tables, whose entries are 32-bits words each and contain 256 elements.
-	//more precisely the SubBytes and MixColumns are integrated in the t-tables creation, as we've seen above, whilst now we are performing a
-	//ShiftRows operation by manipulating the state array indexes in the assignments
-    
-	uint32_t t_table[4];
-    for (int round = 1; round < AES256_ROUNDS; round++) {
-
-        t_table[0] = T0[(state[0]>>24)&0xff] ^ T1[(state[1]>>16)&0xff] ^ T2[(state[2]>> 8)&0xff] ^ T3[(state[3])&0xff];
-        t_table[1] = T0[(state[1]>>24)&0xff] ^ T1[(state[2]>>16)&0xff] ^ T2[(state[3]>> 8)&0xff] ^ T3[(state[0])&0xff];
-        t_table[2] = T0[(state[2]>>24)&0xff] ^ T1[(state[3]>>16)&0xff] ^ T2[(state[0]>> 8)&0xff] ^ T3[(state[1])&0xff];
-        t_table[3] = T0[(state[3]>>24)&0xff] ^ T1[(state[0]>>16)&0xff] ^ T2[(state[1]>> 8)&0xff] ^ T3[(state[2])&0xff];
-
-        //add round key
-        for (int i = 0; i < 4; i++) {
-            uint32_t comp_k = (roundKeys[round*16 + i*4+0] << 24) | (roundKeys[round*16 + i*4+1] << 16) | (roundKeys[round*16 + i*4+2] << 8) | (roundKeys[round*16 + i*4+3]);
-			t_table[i] ^= comp_k;
-        }
-
-        //finally we recreate the state from the t-tables
-        state[0] = t_table[0];
-        state[1] = t_table[1];
-        state[2] = t_table[2];
-        state[3] = t_table[3];
-
-    }
-    
-    //perform final round (see final_round()) above
-    final_round(state, roundKeys + AES256_ROUNDS * 16);
-
-    //positioning the thread on the correct data index based on its identifier
-    data = data + idx * 16;
-
-    //storing the data back
-    for(int i = 0; i < 4; i++){
-        data[i*4+0] ^= (state[i]>>24) & 0xFF;
-        data[i*4+1] ^= (state[i]>>16) & 0xFF;
-        data[i*4+2] ^= (state[i]>>8) & 0xFF;
-        data[i*4+3] ^= state[i] & 0xFF;
-    }
 }
 
 int main(int argc, char** argv) {
@@ -298,34 +310,28 @@ int main(int argc, char** argv) {
     Cipher::Aes<256> aes(key.data());
 
     //t-tables creation
-    uint32_t h_T0[256],  h_T1[256], h_T2[256], h_T3[256];
-    t_tables(h_T0, h_T1, h_T2, h_T3);
+    uint4 h_T[256];
+    t_tables(h_T);
 
-    uint32_t *d_T0, *d_T1, *d_T2, *d_T3;
+    uint4* d_T;
 
     int threads = 256;
-    int blocks = (numBlocks + threads - 1) / threads;
+    int blocks = (numBlocks/8 + threads - 1) / threads;
 
-    byte *d_data;
+    byte *d_data, *d_keys, *d_nonce;
 
     uint64_t start_time = current_time_nsecs();
 
     gpuErrchk(cudaMalloc(&d_data, h_data.size()));
     gpuErrchk(cudaMemcpy(d_data, h_data.data(), h_data.size(), cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMemcpyToSymbol(d_sbox, h_sbox, 256));
     gpuErrchk(cudaMemcpyToSymbol(roundKeys, aes.getRoundKeys(), EXPANDED_KEY_SIZE));
     gpuErrchk(cudaMemcpyToSymbol(nonce, h_nonce.data(), 12));
+    gpuErrchk(cudaMemcpyToSymbol(d_sbox, h_sbox, 256));
+    
+    gpuErrchk(cudaMalloc(&d_T, 256 * sizeof(uint4)));
+    gpuErrchk(cudaMemcpy(d_T, h_T, 256 * sizeof(uint4), cudaMemcpyHostToDevice));
 
-    gpuErrchk(cudaMalloc(&d_T0, 256 * sizeof(uint32_t)));
-    gpuErrchk(cudaMalloc(&d_T1, 256 * sizeof(uint32_t)));
-    gpuErrchk(cudaMalloc(&d_T2, 256 * sizeof(uint32_t)));
-    gpuErrchk(cudaMalloc(&d_T3, 256 * sizeof(uint32_t)));
-    gpuErrchk(cudaMemcpy(d_T0, h_T0, 256 * sizeof(uint32_t), cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMemcpy(d_T1, h_T1, 256 * sizeof(uint32_t), cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMemcpy(d_T2, h_T2, 256 * sizeof(uint32_t), cudaMemcpyHostToDevice));
-    gpuErrchk(cudaMemcpy(d_T3, h_T3, 256 * sizeof(uint32_t), cudaMemcpyHostToDevice));
-
-    aes256_kernel<<<blocks, threads>>>(d_data, numBlocks, d_T0, d_T1, d_T2, d_T3);
+    aes256_kernel<<<blocks, threads>>>(d_data, numBlocks, d_T);
     gpuErrchk(cudaDeviceSynchronize());
     gpuErrchk(cudaMemcpy(h_data.data(), d_data, h_data.size(), cudaMemcpyDeviceToHost));
 
@@ -354,10 +360,7 @@ int main(int argc, char** argv) {
         std::cout << "Error in the encryption"<<std::endl;
     
     gpuErrchk(cudaFree(d_data));
-    gpuErrchk(cudaFree(d_T0));
-    gpuErrchk(cudaFree(d_T1));
-    gpuErrchk(cudaFree(d_T2));
-    gpuErrchk(cudaFree(d_T3));
+    gpuErrchk(cudaFree(d_T));
 
     return 0;
 }
