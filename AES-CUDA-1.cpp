@@ -171,7 +171,6 @@ __global__ void aes256_kernel(byte* data, size_t numBlocks, uint4* d_T){
             state[i] ^= comp_k;
         }
 
-        //macro to simplify the t-tables lookup with the XOR structure by simply calulating the indexes in the same way
         //main rounds, which perform SubBytes, ShiftRows and MixColumns thanks to the t-tables, whose entries are 32-bits words each and contain 256 elements.
 	    //more precisely the SubBytes and MixColumns are integrated in the t-tables creation, as we've seen above, whilst now we are performing a
 	    //ShiftRows operation by manipulating the state array indexes in the assignments
