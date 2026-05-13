@@ -271,6 +271,7 @@ int main(int argc, char** argv) {
 
     //save original plain text in reference before copying the encrypted data back in h_data
     std::vector<byte> reference = h_data;
+    // std::vector<byte> original = h_data;
     size_t numBlocks = h_data.size() / 16;
 
     //key and nonce generation
@@ -296,9 +297,16 @@ int main(int argc, char** argv) {
     //d_data = device data, d_keys = expanded key for aes256 (240 bits)
     byte *d_data, *d_keys, *d_nonce;
 
+    //event to measure elapsed time
+    // cudaEvent_t start, stop;
+    // cudaEventCreate(&start);
+    // cudaEventCreate(&stop);
+    // float ms;
 
-    uint64_t start_time = current_time_nsecs();
-
+    // for(int i = 0; i < 11; i++){
+    // h_data = original;
+    // reference = original;
+    // cudaEventRecord(start);
     gpuErrchk(cudaMalloc(&d_data, h_data.size()));
     gpuErrchk(cudaMalloc(&d_nonce, 12));
     gpuErrchk(cudaMalloc(&d_keys, EXPANDED_KEY_SIZE));
@@ -320,9 +328,14 @@ int main(int argc, char** argv) {
     aes256_kernel<<<blocks, threads>>>(d_data, d_keys, d_nonce, numBlocks, d_T0, d_T1, d_T2, d_T3);
     gpuErrchk(cudaDeviceSynchronize());
     gpuErrchk(cudaMemcpy(h_data.data(), d_data, h_data.size(), cudaMemcpyDeviceToHost));
+    // cudaEventRecord(stop);
+    // cudaEventSynchronize(stop);
+    // cudaEventElapsedTime(&ms, start, stop);
+    // std::cout<<"elapsed time: "<< ms <<std::endl;
 
-    uint64_t end_time = current_time_nsecs();
-    std::cout<<"elapsed time: "<< end_time - start_time<<std::endl;
+    // std::ofstream file("measurements.txt", std::ios::app); // append mode
+    // if (file.is_open())
+    //     file << ms << "\n";
 
     //correctness check comparing the original data array and a reference array encrypted using an OpenSSL library function
     byte iv[16];
@@ -340,6 +353,7 @@ int main(int argc, char** argv) {
         std::cout << "Encryption correct"<<std::endl;
     else
         std::cout << "Error in the encryption"<<std::endl;
+    // }
     
     gpuErrchk(cudaFree(d_data));
     gpuErrchk(cudaFree(d_keys));
