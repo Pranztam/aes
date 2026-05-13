@@ -28,11 +28,11 @@ all: vect cuda0 cuda1
 
 #vectorized
 vect: $(SRC_CPU)
-	$(GPP) $(CPU_FLAGS) $< -o $@
+	$(GPP) $(CPU_FLAGS) $< -o $(TARGET_CPU)
 
 #CUDA0
 cuda0: $(SRC_CUDA0)
-	$(NVCC) $(CUDA_FLAGS) $< -o $@
+	$(NVCC) $(CUDA_FLAGS) $< -o $(TARGET_CUDA0)
 
 #CUDA0 with -lineinfo
 line0: $(SRC_CUDA0)
@@ -40,7 +40,7 @@ line0: $(SRC_CUDA0)
 
 #CUDA1
 cuda1: $(SRC_CUDA1)
-	$(NVCC) $(CUDA_FLAGS) $< -o $@
+	$(NVCC) $(CUDA_FLAGS) $< -o $(TARGET_CUDA1)
 
 #CUDA1 with -lineinfo
 line1: $(SRC_CUDA1)
