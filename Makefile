@@ -50,6 +50,6 @@ line1: $(SRC_CUDA1)
 
 # Clean binaries
 clean:
-	rm -f $(TARGET_CPU) $(TARGET_CUDA0)
+	rm -f $(TARGET_CPU) $(TARGET_CUDA0) $(TARGET_CUDA1)
 
 .PHONY: all clean vect cuda line0
