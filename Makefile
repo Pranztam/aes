@@ -24,25 +24,25 @@ CUDA_FLAGS := -std=c++20 -x cu -w -O3 \
 
 CUDA_FLAGS_LINEINFO := $(CUDA_FLAGS) -lineinfo
 
-# Default target
-all: vect cuda
+all: vect cuda0 cuda1
 
-# CPU build
+#vectorized
 vect: $(SRC_CPU)
 	$(GPP) $(CPU_FLAGS) $< -o $@
 
-# CUDA build (normal)
+#CUDA0
 cuda0: $(SRC_CUDA0)
 	$(NVCC) $(CUDA_FLAGS) $< -o $@
 
-# CUDA build with -lineinfo
+#CUDA0 with -lineinfo
 line0: $(SRC_CUDA0)
 	$(NVCC) $(CUDA_FLAGS_LINEINFO) $< -o $(TARGET_CUDA0)
 
+#CUDA1
 cuda1: $(SRC_CUDA1)
 	$(NVCC) $(CUDA_FLAGS) $< -o $@
 
-# CUDA build with -lineinfo
+#CUDA1 with -lineinfo
 line1: $(SRC_CUDA1)
 	$(NVCC) $(CUDA_FLAGS_LINEINFO) $< -o $(TARGET_CUDA1)
 
