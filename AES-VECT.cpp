@@ -91,45 +91,6 @@ void encrypt(std::span<byte> data, std::span<const byte> nonce, size_t counter, 
 }
 
 int main(int argc, char **argv) {
-    // if(argc < 2){
-    //     std::cerr<<"Usage: ./AES-VECT <size of text to generate in MB>"<<std::endl;
-    //     return -1;
-    // }
-
-    // if(atoi(argv[1]) == 0 || atoi(argv[1]) > 1024){
-    //     std::cerr<<"Size must be between 1 and 128"<<std::endl;
-    //     return -1;
-    // }
-
-    // size_t SIZE_MB = atoi(argv[1])*1024*1024;
-
-    // std::random_device rd;
-    // std::mt19937 gen(rd());
-    // std::uniform_int_distribution<int> dist(0, 255);
-
-    // //plaintext generation
-    // unsigned char* input = (unsigned char*)malloc(SIZE_MB);
-    // for (size_t i = 0; i < SIZE_MB; i++)
-    //     input[i] = static_cast<unsigned char>(dist(gen));
-
-
-    // //copy of original data to reference array for correctness check
-    // unsigned char* reference = (unsigned char*)malloc(SIZE_MB);
-    // memcpy(reference, input, SIZE_MB);
-
-    // //key generation
-    // unsigned char key[32];
-    // for (int i = 0; i < 32; ++i)
-    //     key[i] = static_cast<unsigned char>(dist(gen));
-
-    // //nonce generation
-    // unsigned char nonce[12];
-    // for (int i = 0; i < 12; i++)
-    //     nonce[i] = static_cast<unsigned char>(dist(gen));
-
-	// //the Aes class takes care of the key expansion within its constructor
-    // Cipher::Aes<256> aes(key);
-
     if(argc < 2){
         std::cerr<<"Usage: ./AES-CUDA-1 --file <filename> or ./AES-CUDA-1 <size of text to generate in MB>"<<std::endl;
         return -1;
@@ -179,6 +140,7 @@ int main(int argc, char **argv) {
 
     std::vector<std::thread> threads;
 
+    //calculating how much data a thread will encrypt
     size_t chunk_size = plaintext.size() / THREAD_COUNT;
     chunk_size -= (chunk_size % BLOCK_SIZE);
 
@@ -199,9 +161,9 @@ int main(int argc, char **argv) {
     uint64_t end_time = current_time_nsecs();
     std::cout<<"elapsed time: "<< end_time - start_time<<std::endl;
 
-    std::ofstream file("measurements.txt", std::ios::app); // append mode
-    if (file.is_open())
-        file << end_time - start_time << "\n";
+    // std::ofstream file("measurements.txt", std::ios::app); // append mode
+    // if (file.is_open())
+    //     file << end_time - start_time << "\n";
     
     //correctness check using OpenSSL library functions
     byte iv[16];
