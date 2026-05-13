@@ -304,9 +304,9 @@ int main(int argc, char** argv) {
     // float ms;
 
     // for(int i = 0; i < 11; i++){
-    // h_data = original;
-    // reference = original;
-    // cudaEventRecord(start);
+    //  h_data = original;
+    //  reference = original;
+    //  cudaEventRecord(start);
     gpuErrchk(cudaMalloc(&d_data, h_data.size()));
     gpuErrchk(cudaMalloc(&d_nonce, 12));
     gpuErrchk(cudaMalloc(&d_keys, EXPANDED_KEY_SIZE));

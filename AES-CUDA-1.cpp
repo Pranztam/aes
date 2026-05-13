@@ -295,6 +295,7 @@ int main(int argc, char** argv) {
 
     //save original plain text in reference before copying the encrypted data back in h_data
     std::vector<byte> reference = h_data;
+    // std::vector<byte> original = h_data;
     size_t numBlocks = h_data.size() / 16;
 
     //key and nonce generation
@@ -319,8 +320,15 @@ int main(int argc, char** argv) {
 
     byte *d_data, *d_keys, *d_nonce;
 
-    uint64_t start_time = current_time_nsecs();
+    // cudaEvent_t start, stop;
+    // cudaEventCreate(&start);
+    // cudaEventCreate(&stop);
+    // float ms;
 
+    // for(int i = 0; i < 11; i++){
+    // h_data = original;
+    // reference = original;
+    // cudaEventRecord(start);
     gpuErrchk(cudaMalloc(&d_data, h_data.size()));
     gpuErrchk(cudaMemcpy(d_data, h_data.data(), h_data.size(), cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpyToSymbol(roundKeys, aes.getRoundKeys(), EXPANDED_KEY_SIZE));
@@ -333,13 +341,14 @@ int main(int argc, char** argv) {
     aes256_kernel<<<blocks, threads>>>(d_data, numBlocks, d_T);
     gpuErrchk(cudaDeviceSynchronize());
     gpuErrchk(cudaMemcpy(h_data.data(), d_data, h_data.size(), cudaMemcpyDeviceToHost));
-
-    uint64_t end_time = current_time_nsecs();
-    std::cout<<"elapsed time: "<< end_time - start_time<<std::endl;
+    // cudaEventRecord(stop);
+    // cudaEventSynchronize(stop);
+    // cudaEventElapsedTime(&ms, start, stop);
+    // std::cout<<"elapsed time: "<< ms <<std::endl;
 
     // std::ofstream file("measurements.txt", std::ios::app);
     // if (file.is_open())
-    //     file << end_time - start_time << "\n";
+    //     file << ms << "\n";
 
     //correctness check comparing the original data array and a reference array encrypted using an OpenSSL library function
     byte iv[16];
