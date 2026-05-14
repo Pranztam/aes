@@ -8,11 +8,8 @@
 #include <fstream>
 #include "AES.hpp"
 
-#define AES256_ROUNDS 14
-#define EXPANDED_KEY_SIZE 240
-#define REPLICAS 4
-
-constexpr size_t BLOCK_SIZE = 16;
+constexpr int AES256_ROUNDS = 14;
+constexpr int EXPANDED_KEY_SIZE = 240;
 
 using byte = unsigned char;
 
@@ -130,9 +127,9 @@ __device__ void final_round(uint32_t* state, const byte* roundKey, const byte* s
 
 //main encrypting function (rounds). Note that even though the state of AES is a column oriented data structure, we can still reason in a row-like manner:
 //data input: b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 -> b0 b1 b2 b3 create a column, but in our case we receive them sequentially and therefore can treat them as a row.
-__global__ void aes256_kernel(byte* data, size_t numBlocks, uint4* d_T){
-    size_t stride = (size_t)gridDim.x * blockDim.x;
-    size_t tid = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void aes256_kernel(byte* data, int numBlocks, uint4* d_T){
+    int stride = gridDim.x * blockDim.x;
+    int tid = blockIdx.x * blockDim.x + threadIdx.x;
     bool thread_bound_check = (tid + 7 * stride) < numBlocks;
 
     __shared__ uint32_t T0[256];
@@ -153,8 +150,8 @@ __global__ void aes256_kernel(byte* data, size_t numBlocks, uint4* d_T){
     __syncthreads();
 
     //we want to work on 8 blocks per thread. Each thread encrypts 8 blocks in a stride pattern.
-    for (int b = 0; b < 8; b++) {
-        size_t idx = tid + b * stride;
+    for (int base = 0; base < 8; base++) {
+        int idx = tid + base * stride;
         if (!thread_bound_check && idx >= numBlocks) return;
 
         //creating the state that will be encrypted. It contains nonce || ctr. In our case idx is a perfect ctr
@@ -284,7 +281,7 @@ int main(int argc, char** argv) {
     } else {
 
         //plaintext generated with a given size
-        if (atoi(argv[1]) == 0 || atoi(argv[1]) > 1024) {
+        if (atoi(argv[1]) <= 0 || atoi(argv[1]) > 1024) {
             std::cerr << "Size must be between 1 and 1024 MB" << std::endl;
             return -1;
         }
@@ -320,15 +317,15 @@ int main(int argc, char** argv) {
 
     byte *d_data, *d_keys, *d_nonce;
 
-    // cudaEvent_t start, stop;
-    // cudaEventCreate(&start);
-    // cudaEventCreate(&stop);
-    // float ms;
+    cudaEvent_t start, stop;
+    cudaEventCreate(&start);
+    cudaEventCreate(&stop);
+    float ms;
 
     // for(int i = 0; i < 11; i++){
     // h_data = original;
     // reference = original;
-    // cudaEventRecord(start);
+    cudaEventRecord(start);
     gpuErrchk(cudaMalloc(&d_data, h_data.size()));
     gpuErrchk(cudaMemcpy(d_data, h_data.data(), h_data.size(), cudaMemcpyHostToDevice));
     gpuErrchk(cudaMemcpyToSymbol(roundKeys, aes.getRoundKeys(), EXPANDED_KEY_SIZE));
@@ -341,10 +338,10 @@ int main(int argc, char** argv) {
     aes256_kernel<<<blocks, threads>>>(d_data, numBlocks, d_T);
     gpuErrchk(cudaDeviceSynchronize());
     gpuErrchk(cudaMemcpy(h_data.data(), d_data, h_data.size(), cudaMemcpyDeviceToHost));
-    // cudaEventRecord(stop);
-    // cudaEventSynchronize(stop);
-    // cudaEventElapsedTime(&ms, start, stop);
-    // std::cout<<"elapsed time: "<< ms <<std::endl;
+    cudaEventRecord(stop);
+    cudaEventSynchronize(stop);
+    cudaEventElapsedTime(&ms, start, stop);
+    std::cout<<"elapsed time: "<< ms <<std::endl;
 
     // std::ofstream file("measurements.txt", std::ios::app);
     // if (file.is_open())
