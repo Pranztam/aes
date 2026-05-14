@@ -11,8 +11,8 @@
 #include <openssl/evp.h>
 #include "AES.hpp"
 
-constexpr size_t THREAD_COUNT = 32;
-constexpr size_t BLOCK_SIZE = 16;
+constexpr int THREAD_COUNT = 32;
+constexpr int BLOCK_SIZE = 16;
 
 inline uint64_t current_time_nsecs()
 {
@@ -115,7 +115,7 @@ int main(int argc, char **argv) {
     } else {
 
         //plaintext generated with a given size
-        if (atoi(argv[1]) == 0 || atoi(argv[1]) > 1024) {
+        if (atoi(argv[1]) <= 0 || atoi(argv[1]) > 1024) {
             std::cerr << "Size must be between 1 and 1024 MB" << std::endl;
             return -1;
         }
@@ -146,7 +146,7 @@ int main(int argc, char **argv) {
 
     uint64_t start_time = current_time_nsecs();
 
-    for (size_t t = 0; t < THREAD_COUNT; ++t) {
+    for (int t = 0; t < THREAD_COUNT; ++t) {
         threads.emplace_back([&, t]() {
             size_t start = t * chunk_size;
             size_t end = (t == THREAD_COUNT - 1) ? plaintext.size() : start + chunk_size;

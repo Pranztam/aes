@@ -11,8 +11,6 @@
 #define AES256_ROUNDS 14
 #define EXPANDED_KEY_SIZE 240
 
-constexpr size_t BLOCK_SIZE = 16;
-
 using byte = unsigned char;
 
 inline void gpuAssert(cudaError_t code, const char *file, int line)
@@ -176,8 +174,8 @@ __device__ void final_round(uint32_t* state, const byte* roundKey) {
 //main encrypting function (rounds). Note that even though the state of AES is a column oriented data structure, we can still reason in a row-like manner:
 //data input: b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 -> b0 b1 b2 b3 create a column, but in our case we receive them sequentially and therefore can treat them as a row.
 
-__global__ void aes256_kernel(byte* data, byte* roundKeys, byte* nonce, size_t numBlocks, uint32_t* T0, uint32_t* T1, uint32_t* T2, uint32_t* T3){
-    size_t idx = blockIdx.x * blockDim.x + threadIdx.x;
+__global__ void aes256_kernel(byte* data, byte* roundKeys, byte* nonce, int numBlocks, uint32_t* T0, uint32_t* T1, uint32_t* T2, uint32_t* T3){
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     if (idx >= numBlocks) return;
 
@@ -260,7 +258,7 @@ int main(int argc, char** argv) {
     } else {
 
         //plaintext generated with a given size
-        if (atoi(argv[1]) == 0 || atoi(argv[1]) > 1024) {
+        if (atoi(argv[1]) <= 0 || atoi(argv[1]) > 1024) {
             std::cerr << "Size must be between 1 and 1024 MB" << std::endl;
             return -1;
         }
@@ -272,7 +270,7 @@ int main(int argc, char** argv) {
     //save original plain text in reference before copying the encrypted data back in h_data
     std::vector<byte> reference = h_data;
     // std::vector<byte> original = h_data;
-    size_t numBlocks = h_data.size() / 16;
+    int numBlocks = h_data.size() / 16;
 
     //key and nonce generation
     std::vector<byte> key(32);
