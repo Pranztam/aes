@@ -6,9 +6,9 @@
 
 or
 
-**make vect**
-**make cuda0**
-**make cuda1**
+**make vect**  
+**make cuda0**  
+**make cuda1**  
 **make cuda2**
 
  use the **line** command to compile with the -lineinfo flag for NCU. Ex. make line0
