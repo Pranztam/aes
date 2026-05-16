@@ -10,6 +10,7 @@
 
 constexpr int AES256_ROUNDS = 14;
 constexpr int EXPANDED_KEY_SIZE = 240;
+constexpr int NUM_STREAMS = 32;
 
 using byte = unsigned char;
 
@@ -25,7 +26,7 @@ inline void gpuAssert(cudaError_t code, const char *file, int line)
 
 
 //function to read from a file with arbitrary length, adding padding if necessary (block size is 16 byte, the total size must be a multiple)
-std::vector<byte> read_file(const std::string& filename) {
+size_t read_file(const std::string& filename, byte*& out) {
 
     if (!std::filesystem::exists(filename)) {
         std::cerr << "ERROR FILE NOT FOUND: " << filename << std::endl;
@@ -39,15 +40,31 @@ std::vector<byte> read_file(const std::string& filename) {
     }
     size_t padded_size = file_size + (16 - file_size % 16) % 16;
 
-    //we're padding with 0 if needed
-    std::vector<byte> buffer(padded_size, 0);
-    
-    std::ifstream f(filename, std::ios::binary);
-    f.read(reinterpret_cast<char*>(buffer.data()), file_size);
+    cudaError_t err = cudaMallocHost(&out, padded_size);
+    if (err != cudaSuccess) {
+        std::cerr << "ERROR cudaMallocHost FAILED" << std::endl;
+        return 0;
+    }
 
+    std::ifstream f(filename, std::ios::binary);
+    if (!f) {
+        std::cerr << "ERROR CAN'T OPEN FILE: " << filename << std::endl;
+        cudaFreeHost(out);
+        return 0;
+    }
+
+    //we're padding with 0 if needed
+    f.read(reinterpret_cast<char*>(out), file_size);
+    if (f.gcount() != static_cast<std::streamsize>(file_size)) {
+        std::cerr << "ERROR UNSUCCESSFUL OR INCOMPLETE READ" << std::endl;
+        cudaFreeHost(out);
+        return 0;
+    }
+
+    memset(out + file_size, 0, padded_size - file_size);
     std::cout << "Read " << file_size << " bytes from " << filename << ", padded to " << padded_size << std::endl;
 
-    return buffer;
+    return padded_size;
 }
 
 __constant__ byte roundKeys[EXPANDED_KEY_SIZE];
@@ -102,14 +119,12 @@ void t_tables(uint4* T) {
         byte s  = h_sbox[idx];
         byte s2 = gmul(s, 2);
         byte s3 = gmul(s, 3);
+
         uint32_t t  = (s2 << 24) | (s << 16) | (s << 8) | s3;
         uint32_t t1 = rotate_word(t);
         uint32_t t2 = rotate_word(t1);
         uint32_t t3 = rotate_word(t2);
 
-        // XOR-permuted position
-        // int row = idx >> 5;
-        // int col = (idx & 31) ^ row;
         T[idx] = {t, t1, t2, t3};        
 
     }
@@ -121,10 +136,9 @@ __device__ void final_round(uint32_t* state, const byte* roundKey, const byte* s
 
 //main encrypting function (rounds). Note that even though the state of AES is a column oriented data structure, we can still reason in a row-like manner:
 //data input: b0 b1 b2 b3 b4 b5 b6 b7 b8 b9 b10 b11 b12 b13 b14 b15 -> b0 b1 b2 b3 create a column, but in our case we receive them sequentially and therefore can treat them as a row.
-__global__ void aes256_kernel(byte* data, int numBlocks, uint4* d_T){
+__global__ void aes256_kernel(byte* data, int numBlocks, uint4* d_T, int ctr_offset){
     int stride = gridDim.x * blockDim.x;
-    int tid = blockIdx.x * blockDim.x + threadIdx.x;
-    bool thread_bound_check = (tid + 7 * stride) < numBlocks;
+    int idx = blockIdx.x * blockDim.x + threadIdx.x;
 
     __shared__ uint32_t T0[256];
     __shared__ uint32_t T1[256];
@@ -143,16 +157,14 @@ __global__ void aes256_kernel(byte* data, int numBlocks, uint4* d_T){
 
     __syncthreads();
 
-    //we want to work on 8 blocks per thread. Each thread encrypts 8 blocks in a stride pattern.
-    for (int base = 0; base < 8; base++) {
-        int idx = tid + base * stride;
-        if (!thread_bound_check && idx >= numBlocks) return;
-
+    //grid stride loop
+    for (; idx < numBlocks; idx += stride) {
+        
         //creating the state that will be encrypted. It contains nonce || ctr. In our case idx is a perfect ctr
         uint32_t state[4];  
         for(int i = 0; i < 3; i++)
             state[i] = (nonce[i*4+0] << 24) | (nonce[i*4+1] << 16) | (nonce[i*4+2] << 8) | (nonce[i*4+3]);
-        state[3] = static_cast<uint32_t>(idx); 
+        state[3] = static_cast<uint32_t>(idx + ctr_offset); 
         
 
         //before the regular rounds, we perform the first add round key after we compact the expanded key in 32-bit words (in regular rounds, the add round key operation does the same thing
@@ -260,7 +272,8 @@ int main(int argc, char** argv) {
     std::mt19937 gen(rd());
     std::uniform_int_distribution<int> dist(0, 255);
 
-    std::vector<byte> h_data;
+    byte *h_data;
+    size_t SIZE = 0;
 
     if (strcmp(argv[1], "--file") == 0) {
         if (argc < 3) {
@@ -269,8 +282,8 @@ int main(int argc, char** argv) {
         }
 
         //plaintext from a file
-        h_data = read_file(argv[2]);
-        if (h_data.empty()) return -1;
+        SIZE = read_file(argv[2], h_data);
+        if(SIZE == 0) return -1;
 
     } else {
 
@@ -280,14 +293,14 @@ int main(int argc, char** argv) {
             return -1;
         }
 
-        h_data.resize(atoi(argv[1])*1024*1024);
-        std::generate(h_data.begin(), h_data.end(), [&]() { return static_cast<byte>(dist(gen)); });
+        SIZE = static_cast<size_t>(atoi(argv[1])*1024*1024);
+        gpuErrchk(cudaMallocHost(&h_data, SIZE));
+        for (size_t i = 0; i < SIZE; i++)
+            h_data[i] = static_cast<byte>(dist(gen));
     }
 
     //save original plain text in reference before copying the encrypted data back in h_data
-    std::vector<byte> reference = h_data;
-    // std::vector<byte> original = h_data;
-    size_t numBlocks = h_data.size() / 16;
+    std::vector<byte> reference(h_data, h_data + SIZE);
 
     //key and nonce generation
     std::vector<byte> key(32);
@@ -307,18 +320,26 @@ int main(int argc, char** argv) {
     uint4* d_T;
 
     int threads = 256;
-    int blocks = (numBlocks/8 + threads - 1) / threads;
 
     byte *d_data, *d_keys, *d_nonce;
+
+    //streams and chunk size setup
+    cudaStream_t streams[NUM_STREAMS];
+    for (int i = 0; i < NUM_STREAMS; i++)
+        gpuErrchk(cudaStreamCreate(&streams[i]));
+
+    size_t chunk_size = SIZE / NUM_STREAMS;
+    chunk_size -= (chunk_size % 16);
+    int numBlocksPerChunk = 336;
 
     cudaEvent_t start, stop;
     cudaEventCreate(&start);
     cudaEventCreate(&stop);
     float ms;
-
+        
     cudaEventRecord(start);
-    gpuErrchk(cudaMalloc(&d_data, h_data.size()));
-    gpuErrchk(cudaMemcpy(d_data, h_data.data(), h_data.size(), cudaMemcpyHostToDevice));
+
+    gpuErrchk(cudaMalloc(&d_data, SIZE));
     gpuErrchk(cudaMemcpyToSymbol(roundKeys, aes.getRoundKeys(), EXPANDED_KEY_SIZE));
     gpuErrchk(cudaMemcpyToSymbol(nonce, h_nonce.data(), 12));
     gpuErrchk(cudaMemcpyToSymbol(d_sbox, h_sbox, 256));
@@ -326,18 +347,29 @@ int main(int argc, char** argv) {
     gpuErrchk(cudaMalloc(&d_T, 256 * sizeof(uint4)));
     gpuErrchk(cudaMemcpy(d_T, h_T, 256 * sizeof(uint4), cudaMemcpyHostToDevice));
 
-    aes256_kernel<<<blocks, threads>>>(d_data, numBlocks, d_T);
+    
+    // kernel calls using streams
+    for (int i = 0; i < NUM_STREAMS; i++) {
+        size_t offset = i * chunk_size;
+
+        //the last stream must take care of the remaining data left, so it needs a different chunk size calculation
+        size_t current_data_chunk = (i == NUM_STREAMS - 1) ? (SIZE - offset) : chunk_size;
+        size_t chunk_AES_blocks = current_data_chunk / 16;
+
+        gpuErrchk(cudaMemcpyAsync(d_data + offset, h_data + offset, current_data_chunk, cudaMemcpyHostToDevice, streams[i]));
+        aes256_kernel<<<numBlocksPerChunk, threads, 0, streams[i]>>>(d_data + offset, static_cast<int>(chunk_AES_blocks), d_T, offset / 16);
+        gpuErrchk(cudaMemcpyAsync(h_data + offset, d_data + offset, current_data_chunk, cudaMemcpyDeviceToHost, streams[i]));
+    }
     gpuErrchk(cudaDeviceSynchronize());
-    gpuErrchk(cudaMemcpy(h_data.data(), d_data, h_data.size(), cudaMemcpyDeviceToHost));
+
     cudaEventRecord(stop);
     cudaEventSynchronize(stop);
     cudaEventElapsedTime(&ms, start, stop);
-    std::cout<<"elapsed time: "<< ms <<std::endl;
-
+    std::cout<<"elapsed time: "<< ms <<std::endl;    
     // std::ofstream file("measurements.txt", std::ios::app);
     // if (file.is_open())
-    //     file << ms << "\n";
-
+        // file << ms << "\n";
+    
     //correctness check comparing the original data array and a reference array encrypted using an OpenSSL library function
     byte iv[16];
     memcpy(iv, h_nonce.data(), 12);
@@ -350,15 +382,18 @@ int main(int argc, char** argv) {
     EVP_EncryptUpdate(ctx, reference.data(), &outlen, reference.data(), reference.size());
     EVP_CIPHER_CTX_free(ctx);
 
-    if (memcmp(h_data.data(), reference.data(), h_data.size()) == 0)
+    if (memcmp(h_data, reference.data(), SIZE) == 0)
         std::cout << "Encryption correct"<<std::endl;
     else
         std::cout << "Error in the encryption"<<std::endl;
     
     gpuErrchk(cudaFree(d_data));
     gpuErrchk(cudaFree(d_T));
-    // gpuErrchk(cudaEventDestroy(start));
-    // gpuErrchk(cudaEventDestroy(stop));
-
+    for (int i = 0; i < NUM_STREAMS; i++)
+        gpuErrchk(cudaStreamDestroy(streams[i]));
+    gpuErrchk(cudaFreeHost(h_data));
+    gpuErrchk(cudaEventDestroy(start));
+    gpuErrchk(cudaEventDestroy(stop));
     return 0;
+
 }

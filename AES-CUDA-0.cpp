@@ -23,24 +23,17 @@ inline void gpuAssert(cudaError_t code, const char *file, int line)
 
 #define gpuErrchk(ans) { gpuAssert((ans), __FILE__, __LINE__); }
 
-inline uint64_t current_time_nsecs()
-{
-    struct timespec t;
-    clock_gettime(CLOCK_REALTIME, &t);
-    return (t.tv_sec)*1000000000L + t.tv_nsec;
-}
-
 //function to read from a file with arbitrary length, adding padding if necessary (block size is 16 byte, the total size must be a multiple)
 std::vector<byte> read_file(const std::string& filename) {
 
     if (!std::filesystem::exists(filename)) {
-        std::cerr << "Error: file not found: " << filename << std::endl;
+        std::cerr << "ERROR FILE NOT FOUND: " << filename << std::endl;
         return {};
     }
 
     auto file_size = std::filesystem::file_size(filename);
     if (file_size == 0) {
-        std::cerr << "Error: file is empty: " << filename << std::endl;
+        std::cerr << "ERROR EMPTY FILE: " << filename << std::endl;
         return {};
     }
     size_t padded_size = file_size + (16 - file_size % 16) % 16;
@@ -360,6 +353,8 @@ int main(int argc, char** argv) {
     gpuErrchk(cudaFree(d_T1));
     gpuErrchk(cudaFree(d_T2));
     gpuErrchk(cudaFree(d_T3));
-
+    // gpuErrchk(cudaEventDestroy(start));
+    // gpuErrchk(cudaEventDestroy(stop));
+    
     return 0;
 }
